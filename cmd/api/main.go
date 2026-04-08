@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"context"
@@ -44,6 +44,14 @@ import (
 	productrepo "go-baseline-skeleton/internal/product/infra/repo"
 	producttx "go-baseline-skeleton/internal/product/infra/tx"
 	producthttpapi "go-baseline-skeleton/internal/product/transport/httpapi"
+
+	reportapp "go-baseline-skeleton/internal/report/app"
+	reportcache "go-baseline-skeleton/internal/report/infra/cache"
+	reportddl "go-baseline-skeleton/internal/report/infra/ddl"
+	reportrepo "go-baseline-skeleton/internal/report/infra/repo"
+	reportrouter "go-baseline-skeleton/internal/report/infra/router"
+	reporttx "go-baseline-skeleton/internal/report/infra/tx"
+	reporthttpapi "go-baseline-skeleton/internal/report/transport/httpapi"
 )
 
 func main() {
@@ -94,14 +102,16 @@ func main() {
 	if err := baselineUsecase.ValidateStartup(ctx); err != nil {
 		log.Fatalf("startup validation failed: %v", err)
 	}
+
 	baselineHandler := baselinehttpapi.NewHandler(baselineUsecase, logger)
 	identityHandler := buildIdentityHandler(db, redisClient)
 	productHandler := buildProductHandler(db, redisClient)
 	cartHandler := buildCartHandler(db, redisClient)
+	reportHandler := buildReportHandler(db, redisClient)
 
 	server := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           composeRoutes(identityHandler.Routes(), productHandler.Routes(), cartHandler.Routes(), baselineHandler.Routes()),
+		Handler:           composeRoutes(identityHandler.Routes(), productHandler.Routes(), cartHandler.Routes(), reportHandler.Routes(), baselineHandler.Routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -230,10 +240,40 @@ func buildCartHandler(db *sql.DB, redisClient redis.UniversalClient) *carthttpap
 	return carthttpapi.NewHandler(svc)
 }
 
-func composeRoutes(identityRoutes, productRoutes, cartRoutes, baselineRoutes http.Handler) http.Handler {
+func buildReportHandler(db *sql.DB, redisClient redis.UniversalClient) *reporthttpapi.Handler {
+	repo := reportrepo.NewMySQLReportRepo(db)
+	cache := reportcache.NewRedisReportCache(redisClient, readOrDefault("REPORT_CACHE_NAMESPACE", "report:cache"))
+
+	shardingEnabled := envBool("REPORT_SHARDING_ENABLED", true)
+	scanMonths := int(envInt64("REPORT_SHARDING_SCAN_MONTHS", 0))
+	router := reportrouter.NewMonthShardRouterWithOptions(
+		readOrDefault("REPORT_ORDER_BASE_TABLE", "orders"),
+		shardingEnabled,
+		scanMonths,
+	)
+
+	svc := reportapp.NewService(reportapp.Deps{
+		Repo:        repo,
+		Router:      router,
+		Cache:       cache,
+		Tx:          reporttx.NewNoopManager(),
+		DDL:         reportddl.NewShardTableManager(db, readOrDefault("REPORT_ORDER_BASE_TABLE", "orders")),
+		OverviewTTL: time.Duration(envInt64("REPORT_CACHE_OVERVIEW_TTL_SEC", 120)) * time.Second,
+		TrendTTL:    time.Duration(envInt64("REPORT_CACHE_TREND_TTL_SEC", 120)) * time.Second,
+		ListTTL:     time.Duration(envInt64("REPORT_CACHE_LIST_TTL_SEC", 30)) * time.Second,
+	})
+	return reporthttpapi.NewHandler(svc)
+}
+
+func composeRoutes(identityRoutes, productRoutes, cartRoutes, reportRoutes, baselineRoutes http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/identity/") || r.URL.Path == "/identity" {
 			identityRoutes.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/report/") || r.URL.Path == "/report" ||
+			strings.HasPrefix(r.URL.Path, "/admin/report/") || r.URL.Path == "/admin/report" {
+			reportRoutes.ServeHTTP(w, r)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/product/") || r.URL.Path == "/product" || strings.HasPrefix(r.URL.Path, "/admin/") || r.URL.Path == "/admin" {

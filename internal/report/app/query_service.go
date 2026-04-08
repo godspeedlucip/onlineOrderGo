@@ -205,6 +205,34 @@ func (s *Service) QueryOrderList(ctx context.Context, q domain.OrderListQuery) (
 	return out, nil
 }
 
+// PrepareWriteShard binds shard table creation to app orchestration boundary.
+// Write path can call this first, then continue write operations in the same app flow.
+func (s *Service) PrepareWriteShard(ctx context.Context, at time.Time) (string, error) {
+	if s.deps.Router == nil {
+		return "", domain.NewBizError(domain.CodeInternal, "shard router not initialized", nil)
+	}
+	table, err := s.deps.Router.ResolveWriteTable(ctx, at)
+	if err != nil {
+		return "", err
+	}
+	if s.deps.DDL == nil {
+		return table, nil
+	}
+	ensureFn := func(runCtx context.Context) error {
+		return s.deps.DDL.EnsureTable(runCtx, table)
+	}
+	if s.deps.Tx != nil {
+		if txErr := s.deps.Tx.RunInTx(ctx, ensureFn); txErr != nil {
+			return "", txErr
+		}
+		return table, nil
+	}
+	if err := ensureFn(ctx); err != nil {
+		return "", err
+	}
+	return table, nil
+}
+
 func validateRange(from, to time.Time) error {
 	if from.IsZero() || to.IsZero() {
 		return domain.NewBizError(domain.CodeInvalidArgument, "from/to is required", nil)

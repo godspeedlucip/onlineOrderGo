@@ -3,58 +3,57 @@ package cache
 import (
 	"context"
 	"encoding/json"
-	"sync"
+	"fmt"
+	"strings"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
-type entry struct {
-	payload  []byte
-	expireAt time.Time
-}
-
 type RedisReportCache struct {
-	mu    sync.RWMutex
-	items map[string]entry
+	client    redis.UniversalClient
+	namespace string
 }
 
-func NewRedisReportCache() *RedisReportCache {
-	return &RedisReportCache{items: make(map[string]entry)}
+func NewRedisReportCache(client redis.UniversalClient, namespace string) *RedisReportCache {
+	ns := strings.TrimSpace(namespace)
+	if ns == "" {
+		ns = "report:cache"
+	}
+	return &RedisReportCache{client: client, namespace: ns}
 }
 
 func (c *RedisReportCache) Get(ctx context.Context, key string, out any) (bool, error) {
-	_ = ctx
-	now := time.Now()
-	c.mu.RLock()
-	e, ok := c.items[key]
-	c.mu.RUnlock()
-	if !ok {
+	if c == nil || c.client == nil {
+		return false, fmt.Errorf("redis client is not initialized")
+	}
+	raw, err := c.client.Get(ctx, c.buildKey(key)).Bytes()
+	if err == redis.Nil {
 		return false, nil
 	}
-	if now.After(e.expireAt) {
-		c.mu.Lock()
-		delete(c.items, key)
-		c.mu.Unlock()
-		return false, nil
+	if err != nil {
+		return false, err
 	}
-	if err := json.Unmarshal(e.payload, out); err != nil {
+	if err := json.Unmarshal(raw, out); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
 func (c *RedisReportCache) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
-	_ = ctx
+	if c == nil || c.client == nil {
+		return fmt.Errorf("redis client is not initialized")
+	}
 	if ttl <= 0 {
 		ttl = 30 * time.Second
 	}
-	b, err := json.Marshal(value)
+	raw, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	c.items[key] = entry{payload: b, expireAt: time.Now().Add(ttl)}
-	c.mu.Unlock()
-	return nil
+	return c.client.Set(ctx, c.buildKey(key), raw, ttl).Err()
 }
 
-// TODO: replace with real Redis implementation and key namespace.
+func (c *RedisReportCache) buildKey(key string) string {
+	return fmt.Sprintf("%s:%s", c.namespace, strings.TrimSpace(key))
+}

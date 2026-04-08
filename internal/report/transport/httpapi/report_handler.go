@@ -30,6 +30,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/report/overview", http.HandlerFunc(h.overview))
 	mux.Handle("/report/trend", http.HandlerFunc(h.trend))
 	mux.Handle("/report/orders", http.HandlerFunc(h.orders))
+	mux.Handle("/admin/report/overview", http.HandlerFunc(h.overview))
+	mux.Handle("/admin/report/trend", http.HandlerFunc(h.trend))
+	mux.Handle("/admin/report/orders", http.HandlerFunc(h.orders))
 	return mux
 }
 
