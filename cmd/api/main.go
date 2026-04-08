@@ -30,6 +30,11 @@ import (
 	identitysession "go-baseline-skeleton/internal/identity/infra/session"
 	identitytx "go-baseline-skeleton/internal/identity/infra/tx"
 	identityhttpapi "go-baseline-skeleton/internal/identity/transport/httpapi"
+
+	productapp "go-baseline-skeleton/internal/product/app"
+	productcache "go-baseline-skeleton/internal/product/infra/cache"
+	productrepo "go-baseline-skeleton/internal/product/infra/repo"
+	producthttpapi "go-baseline-skeleton/internal/product/transport/httpapi"
 )
 
 func main() {
@@ -81,12 +86,12 @@ func main() {
 		log.Fatalf("startup validation failed: %v", err)
 	}
 	baselineHandler := baselinehttpapi.NewHandler(baselineUsecase, logger)
-
 	identityHandler := buildIdentityHandler(db, redisClient)
+	productHandler := buildProductHandler(db, redisClient)
 
 	server := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           composeRoutes(identityHandler.Routes(), baselineHandler.Routes()),
+		Handler:           composeRoutes(identityHandler.Routes(), productHandler.Routes(), baselineHandler.Routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -105,41 +110,23 @@ func buildIdentityHandler(db *sql.DB, redisClient redis.UniversalClient) *identi
 		repo = identityrepo.NewSQLAccountRepo(db)
 	} else {
 		repo = identityrepo.NewInMemoryAccountRepo([]*identitydomain.Account{
-			{
-				ID:           1,
-				Type:         identitydomain.AccountTypeEmployee,
-				Username:     "admin",
-				DisplayName:  "Admin",
-				PasswordHash: identitypassword.HashMD5("123456"),
-				Status:       identitydomain.AccountStatusEnabled,
-			},
+			{ID: 1, Type: identitydomain.AccountTypeEmployee, Username: "admin", DisplayName: "Admin", PasswordHash: identitypassword.HashMD5("123456"), Status: identitydomain.AccountStatusEnabled},
 		})
 	}
 
 	tokenSvc := identityjwt.NewTokenService(identityjwt.Config{
 		Algorithm: "HS256",
-		Employee: identityjwt.AccountJWTConfig{
-			Secret:   readOrDefault("IDENTITY_JWT_ADMIN_SECRET", "itcast"),
-			Issuer:   strings.TrimSpace(os.Getenv("IDENTITY_JWT_ADMIN_ISSUER")),
-			TTL:      time.Duration(envInt64("IDENTITY_JWT_ADMIN_TTL_MS", 720000000)) * time.Millisecond,
-			ClaimKey: "empId",
-		},
-		User: identityjwt.AccountJWTConfig{
-			Secret:   readOrDefault("IDENTITY_JWT_USER_SECRET", "itcast"),
-			Issuer:   strings.TrimSpace(os.Getenv("IDENTITY_JWT_USER_ISSUER")),
-			TTL:      time.Duration(envInt64("IDENTITY_JWT_USER_TTL_MS", 720000000)) * time.Millisecond,
-			ClaimKey: "userId",
-		},
+		Employee: identityjwt.AccountJWTConfig{Secret: readOrDefault("IDENTITY_JWT_ADMIN_SECRET", "itcast"), Issuer: strings.TrimSpace(os.Getenv("IDENTITY_JWT_ADMIN_ISSUER")), TTL: time.Duration(envInt64("IDENTITY_JWT_ADMIN_TTL_MS", 720000000)) * time.Millisecond, ClaimKey: "empId"},
+		User:     identityjwt.AccountJWTConfig{Secret: readOrDefault("IDENTITY_JWT_USER_SECRET", "itcast"), Issuer: strings.TrimSpace(os.Getenv("IDENTITY_JWT_USER_ISSUER")), TTL: time.Duration(envInt64("IDENTITY_JWT_USER_TTL_MS", 720000000)) * time.Millisecond, ClaimKey: "userId"},
 	})
 
-	sessionStore := identitysession.NewRedisStore(redisClient, readOrDefault("IDENTITY_SESSION_REDIS_PREFIX", "identity:session"))
 	authSvc := identityapp.NewAuthService(identityapp.AuthDeps{
 		Repo:              repo,
 		Token:             tokenSvc,
 		Password:          passwordSvc,
 		PrincipalCtx:      principalCtx,
 		Tx:                identitytx.NewNoopManager(),
-		Sessions:          sessionStore,
+		Sessions:          identitysession.NewRedisStore(redisClient, readOrDefault("IDENTITY_SESSION_REDIS_PREFIX", "identity:session")),
 		RevokeAllOnLogout: envBool("IDENTITY_REVOKE_ALL_ON_LOGOUT", true),
 	})
 
@@ -147,10 +134,27 @@ func buildIdentityHandler(db *sql.DB, redisClient redis.UniversalClient) *identi
 	return identityhttpapi.NewHandler(authSvc, principalCtx, authMiddleware)
 }
 
-func composeRoutes(identityRoutes, baselineRoutes http.Handler) http.Handler {
+func buildProductHandler(db *sql.DB, redisClient redis.UniversalClient) *producthttpapi.Handler {
+	readRepo := productrepo.NewMySQLReadRepository(db)
+	readCache := productcache.NewRedisReadCache(redisClient, strings.TrimSpace(os.Getenv("PRODUCT_CACHE_NAMESPACE")))
+	readSvc := productapp.NewReadService(productapp.ReadDeps{
+		Repo:        readRepo,
+		Cache:       readCache,
+		CategoryTTL: time.Duration(envInt64("PRODUCT_CACHE_CATEGORY_TTL_SEC", 300)) * time.Second,
+		DishTTL:     time.Duration(envInt64("PRODUCT_CACHE_DISH_TTL_SEC", 300)) * time.Second,
+		SetmealTTL:  time.Duration(envInt64("PRODUCT_CACHE_SETMEAL_TTL_SEC", 300)) * time.Second,
+	})
+	return producthttpapi.NewHandler(readSvc)
+}
+
+func composeRoutes(identityRoutes, productRoutes, baselineRoutes http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/identity/") || r.URL.Path == "/identity" {
 			identityRoutes.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/product/") || r.URL.Path == "/product" {
+			productRoutes.ServeHTTP(w, r)
 			return
 		}
 		baselineRoutes.ServeHTTP(w, r)
