@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -13,6 +14,7 @@ type WriteDeps struct {
 	Tx          domain.TxManager
 	Invalidator domain.ProductCacheInvalidator
 	Idempotency domain.IdempotencyStore
+	Outbox      domain.CacheInvalidationOutbox
 
 	// Optional cross-domain dependencies. Keep injected for future expansion.
 	CacheInfra domain.CachePort
@@ -45,7 +47,11 @@ func (s *WriteService) CreateCategory(ctx context.Context, cmd domain.CreateCate
 		return 0, err
 	}
 	if s.deps.Invalidator != nil {
-		_ = s.deps.Invalidator.InvalidateCategory(ctx, id)
+		s.invalidateWithCompensation(ctx, domain.CacheInvalidateTask{
+			Operation:  "category",
+			CategoryID: id,
+			EntityID:   id,
+		})
 	}
 	return id, nil
 }
@@ -68,7 +74,11 @@ func (s *WriteService) UpdateCategory(ctx context.Context, cmd domain.UpdateCate
 		return err
 	}
 	if s.deps.Invalidator != nil {
-		_ = s.deps.Invalidator.InvalidateByCategory(ctx, cmd.ID)
+		s.invalidateWithCompensation(ctx, domain.CacheInvalidateTask{
+			Operation:  "by_category",
+			CategoryID: cmd.ID,
+			EntityID:   cmd.ID,
+		})
 	}
 	return nil
 }
@@ -91,7 +101,11 @@ func (s *WriteService) ChangeCategoryStatus(ctx context.Context, cmd domain.Chan
 		return err
 	}
 	if s.deps.Invalidator != nil {
-		_ = s.deps.Invalidator.InvalidateByCategory(ctx, cmd.ID)
+		s.invalidateWithCompensation(ctx, domain.CacheInvalidateTask{
+			Operation:  "by_category",
+			CategoryID: cmd.ID,
+			EntityID:   cmd.ID,
+		})
 	}
 	return nil
 }
@@ -128,7 +142,11 @@ func (s *WriteService) DeleteCategory(ctx context.Context, id int64, idemKey str
 		return err
 	}
 	if s.deps.Invalidator != nil {
-		_ = s.deps.Invalidator.InvalidateByCategory(ctx, id)
+		s.invalidateWithCompensation(ctx, domain.CacheInvalidateTask{
+			Operation:  "by_category",
+			CategoryID: id,
+			EntityID:   id,
+		})
 	}
 	return nil
 }
@@ -151,7 +169,11 @@ func (s *WriteService) CreateDish(ctx context.Context, cmd domain.CreateDishCmd,
 		return 0, err
 	}
 	if s.deps.Invalidator != nil {
-		_ = s.deps.Invalidator.InvalidateDish(ctx, id, cmd.CategoryID)
+		s.invalidateWithCompensation(ctx, domain.CacheInvalidateTask{
+			Operation:  "dish",
+			CategoryID: cmd.CategoryID,
+			EntityID:   id,
+		})
 	}
 	return id, nil
 }
@@ -182,7 +204,11 @@ func (s *WriteService) UpdateDish(ctx context.Context, cmd domain.UpdateDishCmd,
 		return err
 	}
 	if s.deps.Invalidator != nil {
-		_ = s.deps.Invalidator.InvalidateDish(ctx, cmd.ID, cmd.CategoryID)
+		s.invalidateWithCompensation(ctx, domain.CacheInvalidateTask{
+			Operation:  "dish",
+			CategoryID: cmd.CategoryID,
+			EntityID:   cmd.ID,
+		})
 	}
 	return nil
 }
@@ -205,7 +231,10 @@ func (s *WriteService) ChangeDishStatus(ctx context.Context, cmd domain.ChangeDi
 		return err
 	}
 	if s.deps.Invalidator != nil {
-		_ = s.deps.Invalidator.InvalidateDish(ctx, cmd.ID, 0)
+		s.invalidateWithCompensation(ctx, domain.CacheInvalidateTask{
+			Operation: "dish",
+			EntityID:  cmd.ID,
+		})
 	}
 	return nil
 }
@@ -235,7 +264,10 @@ func (s *WriteService) DeleteDish(ctx context.Context, id int64, idemKey string)
 		return err
 	}
 	if s.deps.Invalidator != nil {
-		_ = s.deps.Invalidator.InvalidateDish(ctx, id, 0)
+		s.invalidateWithCompensation(ctx, domain.CacheInvalidateTask{
+			Operation: "dish",
+			EntityID:  id,
+		})
 	}
 	return nil
 }
@@ -258,7 +290,11 @@ func (s *WriteService) CreateSetmeal(ctx context.Context, cmd domain.CreateSetme
 		return 0, err
 	}
 	if s.deps.Invalidator != nil {
-		_ = s.deps.Invalidator.InvalidateSetmeal(ctx, id, cmd.CategoryID)
+		s.invalidateWithCompensation(ctx, domain.CacheInvalidateTask{
+			Operation:  "setmeal",
+			CategoryID: cmd.CategoryID,
+			EntityID:   id,
+		})
 	}
 	return id, nil
 }
@@ -289,7 +325,11 @@ func (s *WriteService) UpdateSetmeal(ctx context.Context, cmd domain.UpdateSetme
 		return err
 	}
 	if s.deps.Invalidator != nil {
-		_ = s.deps.Invalidator.InvalidateSetmeal(ctx, cmd.ID, cmd.CategoryID)
+		s.invalidateWithCompensation(ctx, domain.CacheInvalidateTask{
+			Operation:  "setmeal",
+			CategoryID: cmd.CategoryID,
+			EntityID:   cmd.ID,
+		})
 	}
 	return nil
 }
@@ -312,7 +352,10 @@ func (s *WriteService) ChangeSetmealStatus(ctx context.Context, cmd domain.Chang
 		return err
 	}
 	if s.deps.Invalidator != nil {
-		_ = s.deps.Invalidator.InvalidateSetmeal(ctx, cmd.ID, 0)
+		s.invalidateWithCompensation(ctx, domain.CacheInvalidateTask{
+			Operation: "setmeal",
+			EntityID:  cmd.ID,
+		})
 	}
 	return nil
 }
@@ -335,7 +378,10 @@ func (s *WriteService) DeleteSetmeal(ctx context.Context, id int64, idemKey stri
 		return err
 	}
 	if s.deps.Invalidator != nil {
-		_ = s.deps.Invalidator.InvalidateSetmeal(ctx, id, 0)
+		s.invalidateWithCompensation(ctx, domain.CacheInvalidateTask{
+			Operation: "setmeal",
+			EntityID:  id,
+		})
 	}
 	return nil
 }
@@ -382,6 +428,17 @@ func (s *WriteService) withIdempotencyID(
 		return 0, err
 	}
 	if !acquired {
+		snapshot, found, getErr := s.deps.Idempotency.GetDoneResult(ctx, scene, idemKey)
+		if getErr != nil {
+			return 0, getErr
+		}
+		if found {
+			restored, parseErr := decodeInt64Snapshot(snapshot)
+			if parseErr != nil {
+				return 0, domain.NewBizError(domain.CodeInternal, "invalid idempotency snapshot", parseErr)
+			}
+			return restored, nil
+		}
 		return 0, domain.NewBizError(domain.CodeConflict, fmt.Sprintf("duplicate request: %s", scene), nil)
 	}
 
@@ -390,10 +447,64 @@ func (s *WriteService) withIdempotencyID(
 		_ = s.deps.Idempotency.MarkFailed(ctx, scene, idemKey, token, runErr.Error())
 		return 0, runErr
 	}
-	if doneErr := s.deps.Idempotency.MarkDone(ctx, scene, idemKey, token); doneErr != nil {
+	snapshot, marshalErr := encodeInt64Snapshot(out)
+	if marshalErr != nil {
+		_ = s.deps.Idempotency.MarkFailed(ctx, scene, idemKey, token, marshalErr.Error())
+		return 0, domain.NewBizError(domain.CodeInternal, "marshal idempotency snapshot failed", marshalErr)
+	}
+	if doneErr := s.deps.Idempotency.MarkDone(ctx, scene, idemKey, token, snapshot); doneErr != nil {
 		// Keep write result successful; idempotency mark can be retried asynchronously.
 		// TODO: add async retry/outbox for idempotency mark failure.
 		_ = doneErr
 	}
 	return out, nil
+}
+
+func (s *WriteService) invalidateWithCompensation(ctx context.Context, task domain.CacheInvalidateTask) {
+	if s.deps.Outbox != nil && s.deps.Invalidator != nil {
+		_, _ = s.deps.Outbox.RunOnce(ctx, s.deps.Invalidator, 20)
+	}
+	if s.deps.Invalidator == nil {
+		return
+	}
+	if err := dispatchInvalidation(ctx, s.deps.Invalidator, task); err == nil {
+		return
+	}
+	if s.deps.Outbox == nil {
+		return
+	}
+	task.EnqueueAtMS = time.Now().UnixMilli()
+	_ = s.deps.Outbox.Enqueue(ctx, task)
+}
+
+func dispatchInvalidation(ctx context.Context, invalidator domain.ProductCacheInvalidator, task domain.CacheInvalidateTask) error {
+	switch task.Operation {
+	case "category":
+		return invalidator.InvalidateCategory(ctx, task.EntityID)
+	case "dish":
+		return invalidator.InvalidateDish(ctx, task.EntityID, task.CategoryID)
+	case "setmeal":
+		return invalidator.InvalidateSetmeal(ctx, task.EntityID, task.CategoryID)
+	case "by_category":
+		return invalidator.InvalidateByCategory(ctx, task.CategoryID)
+	default:
+		return domain.NewBizError(domain.CodeInvalidArgument, "unknown invalidation operation", nil)
+	}
+}
+
+func encodeInt64Snapshot(v int64) ([]byte, error) {
+	return json.Marshal(map[string]int64{"id": v})
+}
+
+func decodeInt64Snapshot(raw []byte) (int64, error) {
+	if len(raw) == 0 {
+		return 0, nil
+	}
+	var payload struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return 0, err
+	}
+	return payload.ID, nil
 }

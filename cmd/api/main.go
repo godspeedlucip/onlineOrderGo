@@ -33,7 +33,9 @@ import (
 
 	productapp "go-baseline-skeleton/internal/product/app"
 	productcache "go-baseline-skeleton/internal/product/infra/cache"
+	productidempotency "go-baseline-skeleton/internal/product/infra/idempotency"
 	productrepo "go-baseline-skeleton/internal/product/infra/repo"
+	producttx "go-baseline-skeleton/internal/product/infra/tx"
 	producthttpapi "go-baseline-skeleton/internal/product/transport/httpapi"
 )
 
@@ -144,7 +146,41 @@ func buildProductHandler(db *sql.DB, redisClient redis.UniversalClient) *product
 		DishTTL:     time.Duration(envInt64("PRODUCT_CACHE_DISH_TTL_SEC", 300)) * time.Second,
 		SetmealTTL:  time.Duration(envInt64("PRODUCT_CACHE_SETMEAL_TTL_SEC", 300)) * time.Second,
 	})
-	return producthttpapi.NewHandler(readSvc)
+
+	writeRepo := productrepo.NewMySQLWriteRepository(db)
+	invalidator := productcache.NewRedisInvalidator(readCache)
+	outbox := productcache.NewRedisInvalidationOutbox(redisClient, readOrDefault("PRODUCT_CACHE_INVALIDATION_OUTBOX_KEY", "product:cache_invalidation:outbox"))
+
+	var writeIdemStore interface {
+		Acquire(ctx context.Context, scene, key string, ttl time.Duration) (token string, acquired bool, err error)
+		MarkDone(ctx context.Context, scene, key, token string, result []byte) error
+		MarkFailed(ctx context.Context, scene, key, token, reason string) error
+		GetDoneResult(ctx context.Context, scene, key string) (result []byte, found bool, err error)
+	}
+	if redisClient != nil {
+		writeIdemStore = productidempotency.NewRedisStore(redisClient, readOrDefault("PRODUCT_IDEMPOTENCY_REDIS_PREFIX", "product:idempotency"))
+	} else {
+		writeIdemStore = productidempotency.NewInMemoryStore()
+	}
+
+	var txManager interface {
+		RunInTx(ctx context.Context, fn func(ctx context.Context) error) error
+	}
+	txManager = producttx.NewNoopManager()
+	if db != nil {
+		txManager = producttx.NewSQLManager(db, nil)
+	}
+
+	writeSvc := productapp.NewWriteService(productapp.WriteDeps{
+		Repo:           writeRepo,
+		Tx:             txManager,
+		Invalidator:    invalidator,
+		Idempotency:    writeIdemStore,
+		Outbox:         outbox,
+		IdempotencyTTL: time.Duration(envInt64("PRODUCT_WRITE_IDEMPOTENCY_TTL_SEC", 300)) * time.Second,
+	})
+	adminHandler := producthttpapi.NewAdminHandler(writeSvc)
+	return producthttpapi.NewHandler(readSvc, adminHandler)
 }
 
 func composeRoutes(identityRoutes, productRoutes, baselineRoutes http.Handler) http.Handler {
@@ -153,7 +189,7 @@ func composeRoutes(identityRoutes, productRoutes, baselineRoutes http.Handler) h
 			identityRoutes.ServeHTTP(w, r)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/product/") || r.URL.Path == "/product" {
+		if strings.HasPrefix(r.URL.Path, "/product/") || r.URL.Path == "/product" || strings.HasPrefix(r.URL.Path, "/admin/") || r.URL.Path == "/admin" {
 			productRoutes.ServeHTTP(w, r)
 			return
 		}
@@ -187,3 +223,8 @@ func envBool(key string, def bool) bool {
 	}
 	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
+
+
+
+
+

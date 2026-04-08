@@ -25,6 +25,12 @@ func TestComposeRoutes_ProductMounted(t *testing.T) {
 		t.Fatalf("product route not mounted, got=%d", rec1.Code)
 	}
 
+	recAdmin := httptest.NewRecorder()
+	router.ServeHTTP(recAdmin, httptest.NewRequest(http.MethodGet, "/admin/category/create", nil))
+	if recAdmin.Code != http.StatusAccepted {
+		t.Fatalf("admin product route not mounted, got=%d", recAdmin.Code)
+	}
+
 	rec2 := httptest.NewRecorder()
 	router.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/identity/me", nil))
 	if rec2.Code != http.StatusTeapot {
@@ -37,3 +43,4 @@ func TestComposeRoutes_ProductMounted(t *testing.T) {
 		t.Fatalf("baseline route broken, got=%d", rec3.Code)
 	}
 }
+

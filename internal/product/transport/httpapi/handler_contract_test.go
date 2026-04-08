@@ -40,7 +40,7 @@ type apiEnvelope struct {
 }
 
 func TestHandler_ListCategories_ResponseContract(t *testing.T) {
-	h := NewHandler(&fakeReadUsecase{})
+	h := NewHandler(&fakeReadUsecase{}, nil)
 	req := httptest.NewRequest(http.MethodGet, "/product/category/list?type=1", nil)
 	rec := httptest.NewRecorder()
 

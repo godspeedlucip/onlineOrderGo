@@ -12,7 +12,8 @@ import (
 )
 
 type Handler struct {
-	read domain.ProductReadUsecase
+	read  domain.ProductReadUsecase
+	admin *AdminHandler
 }
 
 type response struct {
@@ -22,8 +23,8 @@ type response struct {
 	Timestamp int64  `json:"timestamp"`
 }
 
-func NewHandler(read domain.ProductReadUsecase) *Handler {
-	return &Handler{read: read}
+func NewHandler(read domain.ProductReadUsecase, admin *AdminHandler) *Handler {
+	return &Handler{read: read, admin: admin}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -33,6 +34,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/product/dish/detail", http.HandlerFunc(h.getDishDetail))
 	mux.Handle("/product/setmeal/list", http.HandlerFunc(h.listSetmeals))
 	mux.Handle("/product/setmeal/detail", http.HandlerFunc(h.getSetmealDetail))
+	if h.admin != nil {
+		mux.Handle("/admin/", h.admin.Routes())
+	}
 	return mux
 }
 

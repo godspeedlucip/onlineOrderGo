@@ -17,6 +17,7 @@ const (
 type record struct {
 	token     string
 	status    idemStatus
+	result    []byte
 	expireAt  time.Time
 	updatedAt time.Time
 }
@@ -54,7 +55,7 @@ func (s *InMemoryStore) Acquire(ctx context.Context, scene, key string, ttl time
 	return token, true, nil
 }
 
-func (s *InMemoryStore) MarkDone(ctx context.Context, scene, key, token string) error {
+func (s *InMemoryStore) MarkDone(ctx context.Context, scene, key, token string, result []byte) error {
 	_ = ctx
 	mapKey := scene + ":" + key
 	now := time.Now()
@@ -70,6 +71,11 @@ func (s *InMemoryStore) MarkDone(ctx context.Context, scene, key, token string) 
 		return nil
 	}
 	old.status = statusDone
+	if len(result) > 0 {
+		old.result = append([]byte(nil), result...)
+	} else {
+		old.result = nil
+	}
 	old.updatedAt = now
 	s.items[mapKey] = old
 	return nil
@@ -92,8 +98,31 @@ func (s *InMemoryStore) MarkFailed(ctx context.Context, scene, key, token, reaso
 		return nil
 	}
 	old.status = statusFailed
+	old.result = nil
 	old.updatedAt = now
 	// Failed record is removed to allow immediate retry.
 	delete(s.items, mapKey)
 	return nil
+}
+
+func (s *InMemoryStore) GetDoneResult(ctx context.Context, scene, key string) ([]byte, bool, error) {
+	_ = ctx
+	mapKey := scene + ":" + key
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	old, ok := s.items[mapKey]
+	if !ok {
+		return nil, false, nil
+	}
+	if now.After(old.expireAt) {
+		delete(s.items, mapKey)
+		return nil, false, nil
+	}
+	if old.status != statusDone {
+		return nil, false, nil
+	}
+	return append([]byte(nil), old.result...), true, nil
 }

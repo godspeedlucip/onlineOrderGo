@@ -59,7 +59,9 @@ func TestRedisReadCache_DeleteByPrefix(t *testing.T) {
 
 	_ = cache.SetDishes(ctx, "product:dish:cid=1:status=1:name=:client=user", []domain.DishVO{{ID: 1}}, time.Minute)
 	_ = cache.SetDishes(ctx, "product:dish:cid=2:status=1:name=:client=user", []domain.DishVO{{ID: 2}}, time.Minute)
-	cache.deleteByPrefix("product:dish:cid=1:")
+	if err := cache.deleteByPrefix("product:dish:cid=1:"); err != nil {
+		t.Fatalf("deleteByPrefix failed: %v", err)
+	}
 
 	_, ok1, _ := cache.GetDishes(ctx, "product:dish:cid=1:status=1:name=:client=user")
 	_, ok2, _ := cache.GetDishes(ctx, "product:dish:cid=2:status=1:name=:client=user")

@@ -90,16 +90,22 @@ func (c *RedisReadCache) set(ctx context.Context, key string, value any, ttl tim
 	return c.client.Set(ctx, c.buildKey(key), payload, ttl).Err()
 }
 
-func (c *RedisReadCache) deleteByPrefix(prefix string) {
+func (c *RedisReadCache) deleteByPrefix(prefix string) error {
 	if c == nil || c.client == nil {
-		return
+		return nil
 	}
 	ctx := context.Background()
 	pattern := c.buildKey(prefix) + "*"
 	iter := c.client.Scan(ctx, 0, pattern, 100).Iterator()
 	for iter.Next(ctx) {
-		_ = c.client.Del(ctx, iter.Val()).Err()
+		if err := c.client.Del(ctx, iter.Val()).Err(); err != nil {
+			return err
+		}
 	}
+	if err := iter.Err(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *RedisReadCache) buildKey(key string) string {

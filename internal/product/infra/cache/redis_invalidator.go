@@ -18,9 +18,15 @@ func (i *RedisInvalidator) InvalidateCategory(ctx context.Context, categoryID in
 	if i.readCache == nil {
 		return nil
 	}
-	i.readCache.deleteByPrefix("product:category:")
-	i.readCache.deleteByPrefix(fmt.Sprintf("product:dish:cid=%d:", categoryID))
-	i.readCache.deleteByPrefix(fmt.Sprintf("product:setmeal:cid=%d:", categoryID))
+	if err := i.readCache.deleteByPrefix("product:category:"); err != nil {
+		return err
+	}
+	if err := i.readCache.deleteByPrefix(fmt.Sprintf("product:dish:cid=%d:", categoryID)); err != nil {
+		return err
+	}
+	if err := i.readCache.deleteByPrefix(fmt.Sprintf("product:setmeal:cid=%d:", categoryID)); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -30,9 +36,13 @@ func (i *RedisInvalidator) InvalidateDish(ctx context.Context, dishID int64, cat
 	if i.readCache == nil {
 		return nil
 	}
-	i.readCache.deleteByPrefix("product:dish:")
+	if err := i.readCache.deleteByPrefix("product:dish:"); err != nil {
+		return err
+	}
 	if categoryID > 0 {
-		i.readCache.deleteByPrefix(fmt.Sprintf("product:dish:cid=%d:", categoryID))
+		if err := i.readCache.deleteByPrefix(fmt.Sprintf("product:dish:cid=%d:", categoryID)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -43,9 +53,13 @@ func (i *RedisInvalidator) InvalidateSetmeal(ctx context.Context, setmealID int6
 	if i.readCache == nil {
 		return nil
 	}
-	i.readCache.deleteByPrefix("product:setmeal:")
+	if err := i.readCache.deleteByPrefix("product:setmeal:"); err != nil {
+		return err
+	}
 	if categoryID > 0 {
-		i.readCache.deleteByPrefix(fmt.Sprintf("product:setmeal:cid=%d:", categoryID))
+		if err := i.readCache.deleteByPrefix(fmt.Sprintf("product:setmeal:cid=%d:", categoryID)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -55,9 +69,15 @@ func (i *RedisInvalidator) InvalidateByCategory(ctx context.Context, categoryID 
 	if i.readCache == nil {
 		return nil
 	}
-	i.readCache.deleteByPrefix("product:category:")
-	i.readCache.deleteByPrefix(fmt.Sprintf("product:dish:cid=%d:", categoryID))
-	i.readCache.deleteByPrefix(fmt.Sprintf("product:setmeal:cid=%d:", categoryID))
+	if err := i.readCache.deleteByPrefix("product:category:"); err != nil {
+		return err
+	}
+	if err := i.readCache.deleteByPrefix(fmt.Sprintf("product:dish:cid=%d:", categoryID)); err != nil {
+		return err
+	}
+	if err := i.readCache.deleteByPrefix(fmt.Sprintf("product:setmeal:cid=%d:", categoryID)); err != nil {
+		return err
+	}
 	return nil
 }
 
