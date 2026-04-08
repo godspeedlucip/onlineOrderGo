@@ -1,4 +1,4 @@
-package app
+﻿package app
 
 import (
 	"context"
@@ -215,7 +215,11 @@ func (u *BootstrapUsecase) runActionInTx(ctx context.Context, action func(ctx co
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		var bizErr *domain.BizError
+		if errors.As(err, &bizErr) {
+			return nil, bizErr
+		}
+		return nil, domain.NewBizError(domain.CodeInternal, "transaction execution failed", err)
 	}
 	return result, nil
 }

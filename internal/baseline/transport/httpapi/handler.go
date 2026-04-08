@@ -1,4 +1,4 @@
-package httpapi
+﻿package httpapi
 
 import (
 	"context"
@@ -20,11 +20,11 @@ type Handler struct {
 }
 
 type Response struct {
-	Code      string      `json:"code"`
-	Message   string      `json:"message"`
-	Data      any         `json:"data,omitempty"`
-	Timestamp int64       `json:"timestamp"`
-	TraceID   string      `json:"traceId,omitempty"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Data      any    `json:"data,omitempty"`
+	Timestamp int64  `json:"timestamp"`
+	TraceID   string `json:"traceId,omitempty"`
 }
 
 func NewHandler(usecase *app.BootstrapUsecase, logger domain.Logger) *Handler {
@@ -46,6 +46,7 @@ func (h *Handler) wrap(next func(http.ResponseWriter, *http.Request) error) http
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		ctx := logging.ContextWithRequestID(r.Context(), requestIDFromHeader(r))
+		ctx = enrichContextFromHeaders(ctx, r)
 		r = r.WithContext(ctx)
 
 		defer func() {
@@ -146,6 +147,19 @@ func requestIDFromHeader(r *http.Request) string {
 		id = fmt.Sprintf("generated-%d", time.Now().UnixNano())
 	}
 	return id
+}
+
+func enrichContextFromHeaders(ctx context.Context, r *http.Request) context.Context {
+	if messageID := r.Header.Get("X-Message-Id"); messageID != "" {
+		ctx = logging.ContextWithMessageID(ctx, messageID)
+	}
+	if orderID := r.Header.Get("X-Order-Id"); orderID != "" {
+		ctx = logging.ContextWithOrderID(ctx, orderID)
+	}
+	if tableSuffix := r.Header.Get("X-Table-Suffix"); tableSuffix != "" {
+		ctx = logging.ContextWithTableSuffix(ctx, tableSuffix)
+	}
+	return ctx
 }
 
 func requestIDFromContext(ctx context.Context) string {

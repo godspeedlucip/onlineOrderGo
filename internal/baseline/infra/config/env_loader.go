@@ -1,4 +1,4 @@
-package config
+﻿package config
 
 import (
 	"context"
@@ -22,6 +22,10 @@ func (l *EnvLoader) Load(ctx context.Context) (*domain.Config, error) {
 	if err != nil {
 		return nil, domain.NewBizError(domain.CodeInvalidArgument, "invalid IDEMPOTENCY_TTL_SECOND", err)
 	}
+	redisDB, err := envInt("REDIS_DB", 0)
+	if err != nil {
+		return nil, domain.NewBizError(domain.CodeInvalidArgument, "invalid REDIS_DB", err)
+	}
 
 	cfg := &domain.Config{
 		App: domain.AppConfig{
@@ -30,6 +34,16 @@ func (l *EnvLoader) Load(ctx context.Context) (*domain.Config, error) {
 		},
 		HTTP: domain.HTTPConfig{
 			Addr: readOrDefault("HTTP_ADDR", ":8080"),
+		},
+		DB: domain.DBConfig{
+			Driver: strings.ToLower(readOrDefault("DB_DRIVER", "mysql")),
+			DSN:    readOrDefault("DB_DSN", ""),
+		},
+		Redis: domain.RedisConfig{
+			Addr:      readOrDefault("REDIS_ADDR", "127.0.0.1:6379"),
+			Password:  readOrDefault("REDIS_PASSWORD", ""),
+			DB:        redisDB,
+			KeyPrefix: readOrDefault("REDIS_KEY_PREFIX", "baseline:idempotency"),
 		},
 		Log: domain.LogConfig{
 			Level: strings.ToLower(readOrDefault("LOG_LEVEL", "info")),

@@ -1,6 +1,7 @@
-package errors
+﻿package errors
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -31,9 +32,15 @@ func (m *HTTPErrorMapper) ToHTTP(err error) (status int, code string, message st
 			return http.StatusConflict, string(bizErr.Code), bizErr.Message
 		case domain.CodeServiceUnavailable:
 			return http.StatusServiceUnavailable, string(bizErr.Code), bizErr.Message
-		default:
+		case domain.CodeInternal:
 			return http.StatusInternalServerError, string(bizErr.Code), bizErr.Message
+		default:
+			return http.StatusInternalServerError, string(domain.CodeInternal), bizErr.Message
 		}
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return http.StatusServiceUnavailable, string(domain.CodeServiceUnavailable), "request canceled or timed out"
 	}
 
 	return http.StatusInternalServerError, string(domain.CodeInternal), "internal error"

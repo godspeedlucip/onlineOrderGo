@@ -1,12 +1,14 @@
-package main
+﻿package main
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"net/http"
 	"time"
 
 	"go-baseline-skeleton/internal/baseline/app"
+	"go-baseline-skeleton/internal/baseline/domain"
 	"go-baseline-skeleton/internal/baseline/infra/config"
 	"go-baseline-skeleton/internal/baseline/infra/idempotency"
 	"go-baseline-skeleton/internal/baseline/infra/logging"
@@ -24,8 +26,29 @@ func main() {
 	}
 
 	logger := logging.NewJSONLogger(cfg.App.Name, cfg.App.Env)
-	txManager := tx.NewNoopManager()
-	idempotencyStore := idempotency.NewInMemoryStore()
+
+	var txManager domain.TxManager = tx.NewNoopManager()
+	var db *sql.DB
+	if cfg.DB.DSN != "" {
+		db, err = sql.Open(cfg.DB.Driver, cfg.DB.DSN)
+		if err != nil {
+			log.Fatalf("open db failed: %v", err)
+		}
+		if err = db.PingContext(ctx); err != nil {
+			log.Fatalf("ping db failed: %v", err)
+		}
+		defer db.Close()
+		txManager = tx.NewSQLManager(db, nil)
+	}
+
+	redisClient := idempotency.NewRedisClient(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
+	if cfg.Idempotency.Enabled {
+		if err = redisClient.Ping(ctx).Err(); err != nil {
+			log.Fatalf("ping redis failed: %v", err)
+		}
+	}
+	defer redisClient.Close()
+	idempotencyStore := idempotency.NewRedisStore(redisClient, cfg.Redis.KeyPrefix)
 
 	usecase := app.NewBootstrapUsecase(
 		txManager,
