@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -19,6 +19,13 @@ import (
 	baselinelogging "go-baseline-skeleton/internal/baseline/infra/logging"
 	baselinetx "go-baseline-skeleton/internal/baseline/infra/tx"
 	baselinehttpapi "go-baseline-skeleton/internal/baseline/transport/httpapi"
+
+	cartapp "go-baseline-skeleton/internal/cart/app"
+	cartgateway "go-baseline-skeleton/internal/cart/infra/gateway"
+	cartidempotency "go-baseline-skeleton/internal/cart/infra/idempotency"
+	cartrepo "go-baseline-skeleton/internal/cart/infra/repo"
+	carttx "go-baseline-skeleton/internal/cart/infra/tx"
+	carthttpapi "go-baseline-skeleton/internal/cart/transport/httpapi"
 
 	identityapp "go-baseline-skeleton/internal/identity/app"
 	identitydomain "go-baseline-skeleton/internal/identity/domain"
@@ -90,10 +97,11 @@ func main() {
 	baselineHandler := baselinehttpapi.NewHandler(baselineUsecase, logger)
 	identityHandler := buildIdentityHandler(db, redisClient)
 	productHandler := buildProductHandler(db, redisClient)
+	cartHandler := buildCartHandler(db, redisClient)
 
 	server := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           composeRoutes(identityHandler.Routes(), productHandler.Routes(), baselineHandler.Routes()),
+		Handler:           composeRoutes(identityHandler.Routes(), productHandler.Routes(), cartHandler.Routes(), baselineHandler.Routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -183,7 +191,46 @@ func buildProductHandler(db *sql.DB, redisClient redis.UniversalClient) *product
 	return producthttpapi.NewHandler(readSvc, adminHandler)
 }
 
-func composeRoutes(identityRoutes, productRoutes, baselineRoutes http.Handler) http.Handler {
+func buildCartHandler(db *sql.DB, redisClient redis.UniversalClient) *carthttpapi.Handler {
+	cartReadRepo := productrepo.NewMySQLReadRepository(db)
+	products := cartgateway.NewProductGateway(cartReadRepo)
+	users := cartgateway.NewUserContext()
+	repo := cartrepo.NewMySQLCartRepo(db)
+
+	var txManager interface {
+		RunInTx(ctx context.Context, fn func(ctx context.Context) error) error
+	}
+	txManager = carttx.NewNoopManager()
+	if db != nil {
+		txManager = carttx.NewSQLManager(db, nil)
+	}
+
+	var idemStore interface {
+		Acquire(ctx context.Context, scene, key string, ttl time.Duration) (token string, acquired bool, err error)
+		MarkDone(ctx context.Context, scene, key, token string, result []byte) error
+		MarkFailed(ctx context.Context, scene, key, token, reason string) error
+		GetDoneResult(ctx context.Context, scene, key string) (result []byte, found bool, err error)
+	}
+	if redisClient != nil {
+		idemStore = cartidempotency.NewRedisStore(redisClient, readOrDefault("CART_IDEMPOTENCY_REDIS_PREFIX", "cart:idempotency"))
+	} else if db != nil {
+		idemStore = cartidempotency.NewSQLStore(db)
+	} else {
+		idemStore = cartidempotency.NewInMemoryStore()
+	}
+
+	svc := cartapp.NewService(cartapp.Deps{
+		Repo:           repo,
+		Products:       products,
+		Users:          users,
+		Tx:             txManager,
+		Idempotency:    idemStore,
+		IdempotencyTTL: time.Duration(envInt64("CART_IDEMPOTENCY_TTL_SEC", 300)) * time.Second,
+	})
+	return carthttpapi.NewHandler(svc)
+}
+
+func composeRoutes(identityRoutes, productRoutes, cartRoutes, baselineRoutes http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/identity/") || r.URL.Path == "/identity" {
 			identityRoutes.ServeHTTP(w, r)
@@ -191,6 +238,10 @@ func composeRoutes(identityRoutes, productRoutes, baselineRoutes http.Handler) h
 		}
 		if strings.HasPrefix(r.URL.Path, "/product/") || r.URL.Path == "/product" || strings.HasPrefix(r.URL.Path, "/admin/") || r.URL.Path == "/admin" {
 			productRoutes.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/cart/") || r.URL.Path == "/cart" {
+			cartRoutes.ServeHTTP(w, r)
 			return
 		}
 		baselineRoutes.ServeHTTP(w, r)
@@ -223,8 +274,3 @@ func envBool(key string, def bool) bool {
 	}
 	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
-
-
-
-
-

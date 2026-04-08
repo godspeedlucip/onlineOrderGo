@@ -37,8 +37,9 @@ type TxManager interface {
 
 type IdempotencyStore interface {
 	Acquire(ctx context.Context, scene, key string, ttl time.Duration) (token string, acquired bool, err error)
-	MarkDone(ctx context.Context, scene, key, token string) error
+	MarkDone(ctx context.Context, scene, key, token string, result []byte) error
 	MarkFailed(ctx context.Context, scene, key, token, reason string) error
+	GetDoneResult(ctx context.Context, scene, key string) (result []byte, found bool, err error)
 }
 
 type CachePort interface {

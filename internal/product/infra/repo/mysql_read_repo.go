@@ -134,7 +134,7 @@ func (r *MySQLReadRepository) GetDishByID(ctx context.Context, id int64) (*domai
 		return nil, domain.NewBizError(domain.CodeInternal, "product read db is not initialized", nil)
 	}
 
-	const query = "SELECT id, category_id, name, price, image, description, status, sort FROM dish WHERE id = ? LIMIT 1"
+	const query = "SELECT id, category_id, name, price, image, description, status, sort FROM dish WHERE id = ? AND is_deleted = 0 LIMIT 1"
 	var item domain.Dish
 	err := r.db.QueryRowContext(ctx, query, id).Scan(&item.ID, &item.CategoryID, &item.Name, &item.Price, &item.Image, &item.Description, &item.Status, &item.Sort)
 	if err == sql.ErrNoRows {
@@ -223,7 +223,7 @@ func (r *MySQLReadRepository) GetSetmealByID(ctx context.Context, id int64) (*do
 		return nil, domain.NewBizError(domain.CodeInternal, "product read db is not initialized", nil)
 	}
 
-	const query = "SELECT id, category_id, name, price, image, description, status FROM setmeal WHERE id = ? LIMIT 1"
+	const query = "SELECT id, category_id, name, price, image, description, status FROM setmeal WHERE id = ? AND is_deleted = 0 LIMIT 1"
 	var item domain.Setmeal
 	err := r.db.QueryRowContext(ctx, query, id).Scan(&item.ID, &item.CategoryID, &item.Name, &item.Price, &item.Image, &item.Description, &item.Status)
 	if err == sql.ErrNoRows {

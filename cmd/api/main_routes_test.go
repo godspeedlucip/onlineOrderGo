@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"net/http"
@@ -13,11 +13,14 @@ func TestComposeRoutes_ProductMounted(t *testing.T) {
 	product := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	})
+	cart := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	})
 	baseline := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	router := composeRoutes(identity, product, baseline)
+	router := composeRoutes(identity, product, cart, baseline)
 
 	rec1 := httptest.NewRecorder()
 	router.ServeHTTP(rec1, httptest.NewRequest(http.MethodGet, "/product/category/list", nil))
@@ -38,9 +41,14 @@ func TestComposeRoutes_ProductMounted(t *testing.T) {
 	}
 
 	rec3 := httptest.NewRecorder()
-	router.ServeHTTP(rec3, httptest.NewRequest(http.MethodGet, "/health", nil))
-	if rec3.Code != http.StatusOK {
-		t.Fatalf("baseline route broken, got=%d", rec3.Code)
+	router.ServeHTTP(rec3, httptest.NewRequest(http.MethodGet, "/cart/list", nil))
+	if rec3.Code != http.StatusCreated {
+		t.Fatalf("cart route broken, got=%d", rec3.Code)
+	}
+
+	rec4 := httptest.NewRecorder()
+	router.ServeHTTP(rec4, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if rec4.Code != http.StatusOK {
+		t.Fatalf("baseline route broken, got=%d", rec4.Code)
 	}
 }
-

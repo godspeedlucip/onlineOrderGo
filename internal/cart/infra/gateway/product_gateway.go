@@ -2,51 +2,66 @@ package gateway
 
 import (
 	"context"
-	"sync"
 
 	"go-baseline-skeleton/internal/cart/domain"
+	productdomain "go-baseline-skeleton/internal/product/domain"
 )
 
-type ProductGateway struct {
-	mu       sync.RWMutex
-	dishes   map[int64]domain.ItemSnapshot
-	setmeals map[int64]domain.ItemSnapshot
+type productReadRepository interface {
+	GetDishByID(ctx context.Context, id int64) (*productdomain.Dish, error)
+	GetSetmealByID(ctx context.Context, id int64) (*productdomain.Setmeal, error)
 }
 
-func NewProductGateway() *ProductGateway {
-	return &ProductGateway{
-		dishes: map[int64]domain.ItemSnapshot{
-			101: {ItemID: 101, Name: "Kung Pao Chicken", Image: "", Price: 3800, SaleEnabled: true},
-			102: {ItemID: 102, Name: "Mapo Tofu", Image: "", Price: 2200, SaleEnabled: true},
-		},
-		setmeals: map[int64]domain.ItemSnapshot{
-			201: {ItemID: 201, Name: "Lunch Combo", Image: "", Price: 5200, SaleEnabled: true},
-		},
-	}
+type ProductGateway struct {
+	readRepo productReadRepository
+}
+
+func NewProductGateway(readRepo productReadRepository) *ProductGateway {
+	return &ProductGateway{readRepo: readRepo}
 }
 
 func (g *ProductGateway) GetDishSnapshot(ctx context.Context, dishID int64) (*domain.ItemSnapshot, error) {
-	_ = ctx
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	snap, ok := g.dishes[dishID]
-	if !ok {
+	if g == nil || g.readRepo == nil {
+		return nil, domain.NewBizError(domain.CodeInternal, "product read repository is not initialized", nil)
+	}
+	dish, err := g.readRepo.GetDishByID(ctx, dishID)
+	if err != nil {
+		return nil, err
+	}
+	if dish == nil {
 		return nil, domain.NewBizError(domain.CodeNotFound, "dish not found", nil)
 	}
-	copy := snap
-	return &copy, nil
+	if dish.Status != productdomain.StatusEnabled {
+		return nil, domain.NewBizError(domain.CodeConflict, "dish is disabled", nil)
+	}
+	return &domain.ItemSnapshot{
+		ItemID:      dish.ID,
+		Name:        dish.Name,
+		Image:       dish.Image,
+		Price:       dish.Price,
+		SaleEnabled: true,
+	}, nil
 }
 
 func (g *ProductGateway) GetSetmealSnapshot(ctx context.Context, setmealID int64) (*domain.ItemSnapshot, error) {
-	_ = ctx
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	snap, ok := g.setmeals[setmealID]
-	if !ok {
+	if g == nil || g.readRepo == nil {
+		return nil, domain.NewBizError(domain.CodeInternal, "product read repository is not initialized", nil)
+	}
+	setmeal, err := g.readRepo.GetSetmealByID(ctx, setmealID)
+	if err != nil {
+		return nil, err
+	}
+	if setmeal == nil {
 		return nil, domain.NewBizError(domain.CodeNotFound, "setmeal not found", nil)
 	}
-	copy := snap
-	return &copy, nil
+	if setmeal.Status != productdomain.StatusEnabled {
+		return nil, domain.NewBizError(domain.CodeConflict, "setmeal is disabled", nil)
+	}
+	return &domain.ItemSnapshot{
+		ItemID:      setmeal.ID,
+		Name:        setmeal.Name,
+		Image:       setmeal.Image,
+		Price:       setmeal.Price,
+		SaleEnabled: true,
+	}, nil
 }
-
-// TODO: wire to product module repository and align sale-status behavior with Java SQL.

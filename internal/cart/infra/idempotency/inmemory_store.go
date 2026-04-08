@@ -16,6 +16,7 @@ const (
 type rec struct {
 	token     string
 	status    status
+	result    []byte
 	expireAt  time.Time
 	updatedAt time.Time
 }
@@ -51,7 +52,7 @@ func (s *InMemoryStore) Acquire(ctx context.Context, scene, key string, ttl time
 	return token, true, nil
 }
 
-func (s *InMemoryStore) MarkDone(ctx context.Context, scene, key, token string) error {
+func (s *InMemoryStore) MarkDone(ctx context.Context, scene, key, token string, result []byte) error {
 	_ = ctx
 	mapKey := scene + ":" + key
 	now := time.Now()
@@ -63,6 +64,7 @@ func (s *InMemoryStore) MarkDone(ctx context.Context, scene, key, token string) 
 		return nil
 	}
 	old.status = statusDone
+	old.result = append([]byte(nil), result...)
 	old.updatedAt = now
 	s.items[mapKey] = old
 	return nil
@@ -80,4 +82,25 @@ func (s *InMemoryStore) MarkFailed(ctx context.Context, scene, key, token, reaso
 	}
 	delete(s.items, mapKey)
 	return nil
+}
+
+func (s *InMemoryStore) GetDoneResult(ctx context.Context, scene, key string) ([]byte, bool, error) {
+	_ = ctx
+	mapKey := scene + ":" + key
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old, ok := s.items[mapKey]
+	if !ok {
+		return nil, false, nil
+	}
+	if now.After(old.expireAt) {
+		delete(s.items, mapKey)
+		return nil, false, nil
+	}
+	if old.status != statusDone {
+		return nil, false, nil
+	}
+	return append([]byte(nil), old.result...), true, nil
 }

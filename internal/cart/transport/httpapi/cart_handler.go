@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"go-baseline-skeleton/internal/cart/domain"
+	cartgateway "go-baseline-skeleton/internal/cart/infra/gateway"
 )
 
 type Handler struct {
@@ -35,6 +38,7 @@ func (h *Handler) Routes() http.Handler {
 }
 
 func (h *Handler) add(w http.ResponseWriter, r *http.Request) {
+	r = withUser(r)
 	var req domain.AddCartItemCmd
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(r.Context(), w, domain.NewBizError(domain.CodeInvalidArgument, "invalid body", err), http.StatusBadRequest)
@@ -49,6 +53,7 @@ func (h *Handler) add(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) sub(w http.ResponseWriter, r *http.Request) {
+	r = withUser(r)
 	var req domain.SubCartItemCmd
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(r.Context(), w, domain.NewBizError(domain.CodeInvalidArgument, "invalid body", err), http.StatusBadRequest)
@@ -63,6 +68,7 @@ func (h *Handler) sub(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
+	r = withUser(r)
 	var req domain.UpdateCartQtyCmd
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(r.Context(), w, domain.NewBizError(domain.CodeInvalidArgument, "invalid body", err), http.StatusBadRequest)
@@ -77,6 +83,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
+	r = withUser(r)
 	out, err := h.cart.ListItems(r.Context())
 	if err != nil {
 		h.writeBizError(r.Context(), w, err)
@@ -86,6 +93,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) clear(w http.ResponseWriter, r *http.Request) {
+	r = withUser(r)
 	if err := h.cart.Clear(r.Context(), idemKey(r)); err != nil {
 		h.writeBizError(r.Context(), w, err)
 		return
@@ -95,6 +103,21 @@ func (h *Handler) clear(w http.ResponseWriter, r *http.Request) {
 
 func idemKey(r *http.Request) string {
 	return r.Header.Get("Idempotency-Key")
+}
+
+func withUser(r *http.Request) *http.Request {
+	raw := strings.TrimSpace(r.Header.Get("X-User-ID"))
+	if raw == "" {
+		raw = strings.TrimSpace(r.URL.Query().Get("userId"))
+	}
+	if raw == "" {
+		return r
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return r
+	}
+	return r.WithContext(cartgateway.ContextWithUserID(r.Context(), id))
 }
 
 func (h *Handler) writeOK(ctx context.Context, w http.ResponseWriter, data any) {

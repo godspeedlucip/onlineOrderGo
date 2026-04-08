@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -66,49 +67,64 @@ func (s *Service) AddItem(ctx context.Context, cmd domain.AddCartItemCmd, idemKe
 		if err != nil {
 			return nil, err
 		}
-		if existing != nil {
-			newQty := existing.Quantity + cmd.Count
-			updated, updateErr := s.deps.Repo.UpdateQuantity(txCtx, existing.ID, newQty, existing.Version)
-			if updateErr != nil {
-				return nil, updateErr
+		for i := 0; i < 3; i++ {
+			if existing != nil {
+				newQty := existing.Quantity + cmd.Count
+				updated, updateErr := s.deps.Repo.UpdateQuantity(txCtx, existing.ID, newQty, existing.Version)
+				if updateErr != nil {
+					return nil, updateErr
+				}
+				if updated {
+					latest, latestErr := s.deps.Repo.GetByKey(txCtx, userID, key)
+					if latestErr != nil {
+						return nil, latestErr
+					}
+					if latest == nil {
+						return nil, domain.NewBizError(domain.CodeInternal, "cart item lost after update", nil)
+					}
+					return toVO(*latest), nil
+				}
+				latest, latestErr := s.deps.Repo.GetByKey(txCtx, userID, key)
+				if latestErr != nil {
+					return nil, latestErr
+				}
+				existing = latest
+				continue
 			}
-			if !updated {
-				return nil, domain.NewBizError(domain.CodeConflict, "cart concurrent update", nil)
-			}
-			latest, latestErr := s.deps.Repo.GetByKey(txCtx, userID, key)
-			if latestErr != nil {
-				return nil, latestErr
-			}
-			if latest == nil {
-				return nil, domain.NewBizError(domain.CodeInternal, "cart item lost after update", nil)
-			}
-			return toVO(*latest), nil
-		}
 
-		item := domain.CartItem{
-			UserID:    userID,
-			ItemType:  cmd.ItemType,
-			ItemID:    cmd.ItemID,
-			Flavor:    key.Flavor,
-			Name:      snap.Name,
-			Image:     snap.Image,
-			UnitPrice: snap.Price,
-			Quantity:  cmd.Count,
-			Amount:    snap.Price * int64(cmd.Count),
+			item := domain.CartItem{
+				UserID:    userID,
+				ItemType:  cmd.ItemType,
+				ItemID:    cmd.ItemID,
+				Flavor:    key.Flavor,
+				Name:      snap.Name,
+				Image:     snap.Image,
+				UnitPrice: snap.Price,
+				Quantity:  cmd.Count,
+				Amount:    snap.Price * int64(cmd.Count),
+			}
+			_, createErr := s.deps.Repo.Create(txCtx, item)
+			if createErr != nil {
+				if bizErr, ok := createErr.(*domain.BizError); ok && bizErr.Code == domain.CodeConflict {
+					latest, latestErr := s.deps.Repo.GetByKey(txCtx, userID, key)
+					if latestErr != nil {
+						return nil, latestErr
+					}
+					existing = latest
+					continue
+				}
+				return nil, createErr
+			}
+			created, getErr := s.deps.Repo.GetByKey(txCtx, userID, key)
+			if getErr != nil {
+				return nil, getErr
+			}
+			if created == nil {
+				return nil, domain.NewBizError(domain.CodeInternal, "cart item missing after create", nil)
+			}
+			return toVO(*created), nil
 		}
-		id, createErr := s.deps.Repo.Create(txCtx, item)
-		if createErr != nil {
-			return nil, createErr
-		}
-		created, getErr := s.deps.Repo.GetByKey(txCtx, userID, key)
-		if getErr != nil {
-			return nil, getErr
-		}
-		if created == nil {
-			// TODO: replace with direct repository GetByID when available.
-			created = &domain.CartItem{ID: id, UserID: userID, ItemType: cmd.ItemType, ItemID: cmd.ItemID, Flavor: key.Flavor, Name: snap.Name, Image: snap.Image, UnitPrice: snap.Price, Quantity: cmd.Count, Amount: snap.Price * int64(cmd.Count)}
-		}
-		return toVO(*created), nil
+		return nil, domain.NewBizError(domain.CodeConflict, "cart concurrent update", nil)
 	})
 }
 
@@ -138,33 +154,42 @@ func (s *Service) SubItem(ctx context.Context, cmd domain.SubCartItemCmd, idemKe
 			return nil, domain.NewBizError(domain.CodeNotFound, "cart item not found", nil)
 		}
 
-		newQty := existing.Quantity - cmd.Count
-		if newQty <= 0 {
-			deleted, deleteErr := s.deps.Repo.DeleteByID(txCtx, existing.ID)
-			if deleteErr != nil {
-				return nil, deleteErr
+		for i := 0; i < 3; i++ {
+			newQty := existing.Quantity - cmd.Count
+			if newQty <= 0 {
+				deleted, deleteErr := s.deps.Repo.DeleteByID(txCtx, existing.ID)
+				if deleteErr != nil {
+					return nil, deleteErr
+				}
+				if deleted {
+					return &domain.CartItemVO{}, nil
+				}
+			} else {
+				updated, updateErr := s.deps.Repo.UpdateQuantity(txCtx, existing.ID, newQty, existing.Version)
+				if updateErr != nil {
+					return nil, updateErr
+				}
+				if updated {
+					latest, getErr := s.deps.Repo.GetByKey(txCtx, userID, key)
+					if getErr != nil {
+						return nil, getErr
+					}
+					if latest == nil {
+						return nil, domain.NewBizError(domain.CodeInternal, "cart item lost after update", nil)
+					}
+					return toVO(*latest), nil
+				}
 			}
-			if !deleted {
-				return nil, domain.NewBizError(domain.CodeConflict, "cart concurrent update", nil)
+			latest, getErr := s.deps.Repo.GetByKey(txCtx, userID, key)
+			if getErr != nil {
+				return nil, getErr
 			}
-			return &domain.CartItemVO{}, nil
+			if latest == nil {
+				return &domain.CartItemVO{}, nil
+			}
+			existing = latest
 		}
-
-		updated, updateErr := s.deps.Repo.UpdateQuantity(txCtx, existing.ID, newQty, existing.Version)
-		if updateErr != nil {
-			return nil, updateErr
-		}
-		if !updated {
-			return nil, domain.NewBizError(domain.CodeConflict, "cart concurrent update", nil)
-		}
-		latest, getErr := s.deps.Repo.GetByKey(txCtx, userID, key)
-		if getErr != nil {
-			return nil, getErr
-		}
-		if latest == nil {
-			return nil, domain.NewBizError(domain.CodeInternal, "cart item lost after update", nil)
-		}
-		return toVO(*latest), nil
+		return nil, domain.NewBizError(domain.CodeConflict, "cart concurrent update", nil)
 	})
 }
 
@@ -193,32 +218,41 @@ func (s *Service) UpdateQuantity(ctx context.Context, cmd domain.UpdateCartQtyCm
 			return nil, domain.NewBizError(domain.CodeNotFound, "cart item not found", nil)
 		}
 
-		if cmd.Count == 0 {
-			deleted, deleteErr := s.deps.Repo.DeleteByID(txCtx, existing.ID)
-			if deleteErr != nil {
-				return nil, deleteErr
+		for i := 0; i < 3; i++ {
+			if cmd.Count == 0 {
+				deleted, deleteErr := s.deps.Repo.DeleteByID(txCtx, existing.ID)
+				if deleteErr != nil {
+					return nil, deleteErr
+				}
+				if deleted {
+					return &domain.CartItemVO{}, nil
+				}
+			} else {
+				updated, updateErr := s.deps.Repo.UpdateQuantity(txCtx, existing.ID, cmd.Count, existing.Version)
+				if updateErr != nil {
+					return nil, updateErr
+				}
+				if updated {
+					latest, getErr := s.deps.Repo.GetByKey(txCtx, userID, key)
+					if getErr != nil {
+						return nil, getErr
+					}
+					if latest == nil {
+						return nil, domain.NewBizError(domain.CodeInternal, "cart item lost after update", nil)
+					}
+					return toVO(*latest), nil
+				}
 			}
-			if !deleted {
-				return nil, domain.NewBizError(domain.CodeConflict, "cart concurrent update", nil)
+			latest, getErr := s.deps.Repo.GetByKey(txCtx, userID, key)
+			if getErr != nil {
+				return nil, getErr
 			}
-			return &domain.CartItemVO{}, nil
+			if latest == nil {
+				return &domain.CartItemVO{}, nil
+			}
+			existing = latest
 		}
-
-		updated, updateErr := s.deps.Repo.UpdateQuantity(txCtx, existing.ID, cmd.Count, existing.Version)
-		if updateErr != nil {
-			return nil, updateErr
-		}
-		if !updated {
-			return nil, domain.NewBizError(domain.CodeConflict, "cart concurrent update", nil)
-		}
-		latest, getErr := s.deps.Repo.GetByKey(txCtx, userID, key)
-		if getErr != nil {
-			return nil, getErr
-		}
-		if latest == nil {
-			return nil, domain.NewBizError(domain.CodeInternal, "cart item lost after update", nil)
-		}
-		return toVO(*latest), nil
+		return nil, domain.NewBizError(domain.CodeConflict, "cart concurrent update", nil)
 	})
 }
 
@@ -296,6 +330,17 @@ func (s *Service) withIdempotency(
 		return nil, err
 	}
 	if !acquired {
+		snapshot, found, getErr := s.deps.Idempotency.GetDoneResult(ctx, scene, idemKey)
+		if getErr != nil {
+			return nil, getErr
+		}
+		if found {
+			restored, decodeErr := decodeResultSnapshot(snapshot)
+			if decodeErr != nil {
+				return nil, domain.NewBizError(domain.CodeInternal, "invalid idempotency snapshot", decodeErr)
+			}
+			return restored, nil
+		}
 		return nil, domain.NewBizError(domain.CodeConflict, fmt.Sprintf("duplicate request: %s", scene), nil)
 	}
 
@@ -304,7 +349,12 @@ func (s *Service) withIdempotency(
 		_ = s.deps.Idempotency.MarkFailed(ctx, scene, idemKey, token, runErr.Error())
 		return nil, runErr
 	}
-	if doneErr := s.deps.Idempotency.MarkDone(ctx, scene, idemKey, token); doneErr != nil {
+	snapshot, encodeErr := encodeResultSnapshot(out)
+	if encodeErr != nil {
+		_ = s.deps.Idempotency.MarkFailed(ctx, scene, idemKey, token, encodeErr.Error())
+		return nil, domain.NewBizError(domain.CodeInternal, "encode idempotency snapshot failed", encodeErr)
+	}
+	if doneErr := s.deps.Idempotency.MarkDone(ctx, scene, idemKey, token, snapshot); doneErr != nil {
 		// TODO: add retry path for idempotency mark done failure.
 		_ = doneErr
 	}
@@ -345,4 +395,22 @@ func toVO(item domain.CartItem) *domain.CartItemVO {
 		Quantity:  item.Quantity,
 		Amount:    item.Amount,
 	}
+}
+
+func encodeResultSnapshot(v *domain.CartItemVO) ([]byte, error) {
+	if v == nil {
+		return json.Marshal(struct{}{})
+	}
+	return json.Marshal(v)
+}
+
+func decodeResultSnapshot(raw []byte) (*domain.CartItemVO, error) {
+	if len(raw) == 0 || string(raw) == "{}" {
+		return &domain.CartItemVO{}, nil
+	}
+	var out domain.CartItemVO
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
