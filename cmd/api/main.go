@@ -5,29 +5,45 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
-	"go-baseline-skeleton/internal/baseline/app"
-	"go-baseline-skeleton/internal/baseline/domain"
-	"go-baseline-skeleton/internal/baseline/infra/config"
-	"go-baseline-skeleton/internal/baseline/infra/idempotency"
-	"go-baseline-skeleton/internal/baseline/infra/logging"
-	"go-baseline-skeleton/internal/baseline/infra/tx"
-	"go-baseline-skeleton/internal/baseline/transport/httpapi"
+	"github.com/redis/go-redis/v9"
+
+	baselineapp "go-baseline-skeleton/internal/baseline/app"
+	baselinedomain "go-baseline-skeleton/internal/baseline/domain"
+	baselineconfig "go-baseline-skeleton/internal/baseline/infra/config"
+	baselineidempotency "go-baseline-skeleton/internal/baseline/infra/idempotency"
+	baselinelogging "go-baseline-skeleton/internal/baseline/infra/logging"
+	baselinetx "go-baseline-skeleton/internal/baseline/infra/tx"
+	baselinehttpapi "go-baseline-skeleton/internal/baseline/transport/httpapi"
+
+	identityapp "go-baseline-skeleton/internal/identity/app"
+	identitydomain "go-baseline-skeleton/internal/identity/domain"
+	identitycontext "go-baseline-skeleton/internal/identity/infra/contextx"
+	identityjwt "go-baseline-skeleton/internal/identity/infra/jwt"
+	identitymiddleware "go-baseline-skeleton/internal/identity/infra/middleware"
+	identitypassword "go-baseline-skeleton/internal/identity/infra/password"
+	identityrepo "go-baseline-skeleton/internal/identity/infra/repo"
+	identitysession "go-baseline-skeleton/internal/identity/infra/session"
+	identitytx "go-baseline-skeleton/internal/identity/infra/tx"
+	identityhttpapi "go-baseline-skeleton/internal/identity/transport/httpapi"
 )
 
 func main() {
 	ctx := context.Background()
 
-	cfgLoader := config.NewEnvLoader()
+	cfgLoader := baselineconfig.NewEnvLoader()
 	cfg, err := cfgLoader.Load(ctx)
 	if err != nil {
 		log.Fatalf("load config failed: %v", err)
 	}
 
-	logger := logging.NewJSONLogger(cfg.App.Name, cfg.App.Env)
+	logger := baselinelogging.NewJSONLogger(cfg.App.Name, cfg.App.Env)
 
-	var txManager domain.TxManager = tx.NewNoopManager()
+	var baselineTxManager baselinedomain.TxManager = baselinetx.NewNoopManager()
 	var db *sql.DB
 	if cfg.DB.DSN != "" {
 		db, err = sql.Open(cfg.DB.Driver, cfg.DB.DSN)
@@ -38,39 +54,39 @@ func main() {
 			log.Fatalf("ping db failed: %v", err)
 		}
 		defer db.Close()
-		txManager = tx.NewSQLManager(db, nil)
+		baselineTxManager = baselinetx.NewSQLManager(db, nil)
 	}
 
-	redisClient := idempotency.NewRedisClient(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
+	redisClient := baselineidempotency.NewRedisClient(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
 	if cfg.Idempotency.Enabled {
 		if err = redisClient.Ping(ctx).Err(); err != nil {
 			log.Fatalf("ping redis failed: %v", err)
 		}
 	}
 	defer redisClient.Close()
-	idempotencyStore := idempotency.NewRedisStore(redisClient, cfg.Redis.KeyPrefix)
 
-	usecase := app.NewBootstrapUsecase(
-		txManager,
+	idempotencyStore := baselineidempotency.NewRedisStore(redisClient, cfg.Redis.KeyPrefix)
+	baselineUsecase := baselineapp.NewBootstrapUsecase(
+		baselineTxManager,
 		logger,
 		cfg,
-		nil, // repository
-		nil, // cache
-		nil, // mq
-		nil, // websocket
-		nil, // payment
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
 		idempotencyStore,
 	)
-
-	if err := usecase.ValidateStartup(ctx); err != nil {
+	if err := baselineUsecase.ValidateStartup(ctx); err != nil {
 		log.Fatalf("startup validation failed: %v", err)
 	}
+	baselineHandler := baselinehttpapi.NewHandler(baselineUsecase, logger)
 
-	handler := httpapi.NewHandler(usecase, logger)
+	identityHandler := buildIdentityHandler(db, redisClient)
 
 	server := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           handler.Routes(),
+		Handler:           composeRoutes(identityHandler.Routes(), baselineHandler.Routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -78,4 +94,92 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error(ctx, "server_exit", err, map[string]any{"addr": cfg.HTTP.Addr})
 	}
+}
+
+func buildIdentityHandler(db *sql.DB, redisClient redis.UniversalClient) *identityhttpapi.Handler {
+	principalCtx := identitycontext.NewPrincipalStore()
+	passwordSvc := identitypassword.NewMD5Comparator()
+
+	var repo identitydomain.AccountRepository
+	if db != nil {
+		repo = identityrepo.NewSQLAccountRepo(db)
+	} else {
+		repo = identityrepo.NewInMemoryAccountRepo([]*identitydomain.Account{
+			{
+				ID:           1,
+				Type:         identitydomain.AccountTypeEmployee,
+				Username:     "admin",
+				DisplayName:  "Admin",
+				PasswordHash: identitypassword.HashMD5("123456"),
+				Status:       identitydomain.AccountStatusEnabled,
+			},
+		})
+	}
+
+	tokenSvc := identityjwt.NewTokenService(identityjwt.Config{
+		Algorithm: "HS256",
+		Employee: identityjwt.AccountJWTConfig{
+			Secret:   readOrDefault("IDENTITY_JWT_ADMIN_SECRET", "itcast"),
+			Issuer:   strings.TrimSpace(os.Getenv("IDENTITY_JWT_ADMIN_ISSUER")),
+			TTL:      time.Duration(envInt64("IDENTITY_JWT_ADMIN_TTL_MS", 720000000)) * time.Millisecond,
+			ClaimKey: "empId",
+		},
+		User: identityjwt.AccountJWTConfig{
+			Secret:   readOrDefault("IDENTITY_JWT_USER_SECRET", "itcast"),
+			Issuer:   strings.TrimSpace(os.Getenv("IDENTITY_JWT_USER_ISSUER")),
+			TTL:      time.Duration(envInt64("IDENTITY_JWT_USER_TTL_MS", 720000000)) * time.Millisecond,
+			ClaimKey: "userId",
+		},
+	})
+
+	sessionStore := identitysession.NewRedisStore(redisClient, readOrDefault("IDENTITY_SESSION_REDIS_PREFIX", "identity:session"))
+	authSvc := identityapp.NewAuthService(identityapp.AuthDeps{
+		Repo:              repo,
+		Token:             tokenSvc,
+		Password:          passwordSvc,
+		PrincipalCtx:      principalCtx,
+		Tx:                identitytx.NewNoopManager(),
+		Sessions:          sessionStore,
+		RevokeAllOnLogout: envBool("IDENTITY_REVOKE_ALL_ON_LOGOUT", true),
+	})
+
+	authMiddleware := identitymiddleware.NewRequireAuth(authSvc, principalCtx)
+	return identityhttpapi.NewHandler(authSvc, principalCtx, authMiddleware)
+}
+
+func composeRoutes(identityRoutes, baselineRoutes http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/identity/") || r.URL.Path == "/identity" {
+			identityRoutes.ServeHTTP(w, r)
+			return
+		}
+		baselineRoutes.ServeHTTP(w, r)
+	})
+}
+
+func readOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func envInt64(key string, def int64) int64 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	parsed, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return def
+	}
+	return parsed
+}
+
+func envBool(key string, def bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return def
+	}
+	return v == "1" || v == "true" || v == "yes" || v == "on"
 }

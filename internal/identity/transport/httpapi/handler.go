@@ -1,4 +1,4 @@
-package httpapi
+﻿package httpapi
 
 import (
 	"context"
@@ -80,7 +80,7 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		h.writeError(r.Context(), w, domain.NewBizError(domain.CodeInvalidArgument, "method not allowed", nil), http.StatusBadRequest)
 		return
 	}
-	token := bearerToken(r.Header.Get("Authorization"))
+	token := extractToken(r)
 	if token == "" {
 		h.writeError(r.Context(), w, domain.NewBizError(domain.CodeUnauthorized, "missing token", nil), http.StatusUnauthorized)
 		return
@@ -131,6 +131,19 @@ func (h *Handler) writeJSON(ctx context.Context, w http.ResponseWriter, status i
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func extractToken(r *http.Request) string {
+	if token := bearerToken(r.Header.Get("Authorization")); token != "" {
+		return token
+	}
+	if token := strings.TrimSpace(r.Header.Get("token")); token != "" {
+		return token
+	}
+	if token := strings.TrimSpace(r.Header.Get("authentication")); token != "" {
+		return token
+	}
+	return ""
 }
 
 func bearerToken(v string) string {

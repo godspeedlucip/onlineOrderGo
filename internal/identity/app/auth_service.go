@@ -1,9 +1,10 @@
-package app
+﻿package app
 
 import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"time"
 
@@ -48,7 +49,6 @@ func (s *AuthService) Login(ctx context.Context, in domain.LoginInput) (*domain.
 	}
 
 	if s.deps.Tx != nil {
-		// Tx boundary is controlled in app layer.
 		if err := s.deps.Tx.RunInTx(ctx, run); err != nil {
 			return nil, err
 		}
@@ -106,8 +106,6 @@ func (s *AuthService) loginCore(ctx context.Context, in domain.LoginInput) (*dom
 		TokenID:      tokenID,
 		TokenVersion: tokenVersion,
 		IssuedAt:     now,
-		// TODO: map to Java JWT ttl exactly from config.
-		ExpiresAt: now.Add(2 * time.Hour),
 	}
 	token, expireAt, err := s.deps.Token.Issue(ctx, claims)
 	if err != nil {
@@ -137,6 +135,10 @@ func (s *AuthService) VerifyToken(ctx context.Context, rawToken string) (domain.
 
 	claims, err := s.deps.Token.Parse(ctx, rawToken)
 	if err != nil {
+		var bizErr *domain.BizError
+		if errors.As(err, &bizErr) {
+			return domain.Principal{}, bizErr
+		}
 		return domain.Principal{}, domain.NewBizError(domain.CodeUnauthorized, "invalid token", err)
 	}
 
@@ -183,7 +185,6 @@ func (s *AuthService) Logout(ctx context.Context, rawToken string) error {
 		return domain.NewBizError(domain.CodeInternal, "token service not initialized", nil)
 	}
 	if s.deps.Sessions == nil {
-		// TODO: decide with Java behavior whether logout should fail when session store is unavailable.
 		return nil
 	}
 
@@ -198,7 +199,6 @@ func (s *AuthService) Logout(ctx context.Context, rawToken string) error {
 			return domain.NewBizError(domain.CodeInternal, "session store unavailable", checkErr)
 		}
 		if revoked {
-			// Idempotent logout.
 			return nil
 		}
 		if revokeErr := s.deps.Sessions.MarkTokenRevoked(ctx, claims.TokenID, claims.ExpiresAt); revokeErr != nil {
@@ -212,7 +212,6 @@ func (s *AuthService) Logout(ctx context.Context, rawToken string) error {
 			return domain.NewBizError(domain.CodeInternal, "session version update failed", casErr)
 		}
 		if !updated {
-			// Another request may already rotate version. Keep logout idempotent.
 			return nil
 		}
 	}

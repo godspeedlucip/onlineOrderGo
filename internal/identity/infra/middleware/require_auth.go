@@ -1,4 +1,4 @@
-package middleware
+﻿package middleware
 
 import (
 	"encoding/json"
@@ -26,19 +26,34 @@ func NewRequireAuth(auth domain.AuthUsecase, principalCtx domain.PrincipalContex
 
 func (m *RequireAuth) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := BearerToken(r.Header.Get("Authorization"))
+		token := extractToken(r)
 		if token == "" {
 			writeUnauthorized(w, "missing token")
 			return
 		}
+
 		principal, err := m.auth.VerifyToken(r.Context(), token)
 		if err != nil {
 			writeUnauthorized(w, "invalid token")
 			return
 		}
+
 		ctx := m.principalCtx.WithPrincipal(r.Context(), principal)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func extractToken(r *http.Request) string {
+	if token := BearerToken(r.Header.Get("Authorization")); token != "" {
+		return token
+	}
+	if token := strings.TrimSpace(r.Header.Get("token")); token != "" {
+		return token
+	}
+	if token := strings.TrimSpace(r.Header.Get("authentication")); token != "" {
+		return token
+	}
+	return ""
 }
 
 func BearerToken(v string) string {
