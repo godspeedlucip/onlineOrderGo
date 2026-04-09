@@ -27,7 +27,9 @@ type Order struct {
 
 type OrderItem struct {
 	OrderID     int64
+	ItemType    string
 	SkuID       int64
+	Flavor      string
 	Name        string
 	Quantity    int64
 	UnitAmount  int64
@@ -35,18 +37,18 @@ type OrderItem struct {
 }
 
 type CreateOrderCommand struct {
-	UserID          int64
-	AddressID       int64
-	Remark          string
-	PaymentMethod   string
-	IdempotencyKey  string
+	UserID         int64
+	AddressID      int64
+	Remark         string
+	PaymentMethod  string
+	IdempotencyKey string
 }
 
 type CancelOrderCommand struct {
-	OrderID         int64
-	OperatorID      int64
-	Reason          string
-	IdempotencyKey  string
+	OrderID        int64
+	OperatorID     int64
+	Reason         string
+	IdempotencyKey string
 }
 
 type TransitStatusCommand struct {
@@ -75,4 +77,3 @@ type PaymentRequest struct {
 type PaymentResponse struct {
 	PrepayToken string
 }
-

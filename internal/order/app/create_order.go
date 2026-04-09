@@ -1,4 +1,4 @@
-﻿package app
+package app
 
 import (
 	"context"
@@ -64,6 +64,11 @@ func (s *Service) CreateOrder(ctx context.Context, cmd domain.CreateOrderCommand
 				To:         order.Status,
 				OccurredAt: now,
 			}
+			if s.deps.MQ != nil {
+				if err := s.deps.MQ.PublishOrderEvent(txCtx, *event); err != nil {
+					return err
+				}
+			}
 			out = &domain.OrderView{
 				OrderID:     order.OrderID,
 				OrderNo:     order.OrderNo,
@@ -85,7 +90,8 @@ func (s *Service) CreateOrder(ctx context.Context, cmd domain.CreateOrderCommand
 				PaymentMethod: cmd.PaymentMethod,
 			})
 			if payErr != nil {
-				// TODO: align with Java behavior: whether payment prepare failure should fail API or remain pending.
+				// Fixed policy: prepay failure does NOT rollback created order.
+				// Keep order in PENDING_PAYMENT and let client retry pay later.
 			}
 		}
 		s.postCommit(runCtx, orderRef, event)

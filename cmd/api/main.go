@@ -60,6 +60,18 @@ import (
 	paymentcallbacktx "go-baseline-skeleton/internal/payment_callback/infra/tx"
 	paymentcallbackverify "go-baseline-skeleton/internal/payment_callback/infra/verify"
 	paymentcallbackhttpapi "go-baseline-skeleton/internal/payment_callback/transport/httpapi"
+
+	orderapp "go-baseline-skeleton/internal/order/app"
+	ordercache "go-baseline-skeleton/internal/order/infra/cache"
+	ordercart "go-baseline-skeleton/internal/order/infra/cart"
+	orderidempotency "go-baseline-skeleton/internal/order/infra/idempotency"
+	ordermq "go-baseline-skeleton/internal/order/infra/mq"
+	orderpayment "go-baseline-skeleton/internal/order/infra/payment"
+	orderrepo "go-baseline-skeleton/internal/order/infra/repo"
+	orderrouter "go-baseline-skeleton/internal/order/infra/router"
+	ordertx "go-baseline-skeleton/internal/order/infra/tx"
+	orderws "go-baseline-skeleton/internal/order/infra/websocket"
+	orderhttpapi "go-baseline-skeleton/internal/order/transport/httpapi"
 )
 
 func main() {
@@ -117,10 +129,11 @@ func main() {
 	cartHandler := buildCartHandler(db, redisClient)
 	reportHandler := buildReportHandler(db, redisClient)
 	paymentCallbackHandler := buildPaymentCallbackHandler(db, redisClient)
+	orderHandler := buildOrderHandler(db, redisClient)
 
 	server := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           composeRoutes(identityHandler.Routes(), productHandler.Routes(), cartHandler.Routes(), reportHandler.Routes(), paymentCallbackHandler.Routes(), baselineHandler.Routes()),
+		Handler:           composeRoutes(identityHandler.Routes(), productHandler.Routes(), cartHandler.Routes(), reportHandler.Routes(), paymentCallbackHandler.Routes(), orderHandler.Routes(), baselineHandler.Routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -306,7 +319,56 @@ func buildPaymentCallbackHandler(db *sql.DB, redisClient redis.UniversalClient) 
 	return paymentcallbackhttpapi.NewHandler(usecase)
 }
 
-func composeRoutes(identityRoutes, productRoutes, cartRoutes, reportRoutes, paymentCallbackRoutes, baselineRoutes http.Handler) http.Handler {
+func buildOrderHandler(db *sql.DB, redisClient redis.UniversalClient) *orderhttpapi.Handler {
+	writeRouter := orderrouter.NewMonthShardRouter(readOrDefault("ORDER_BASE_TABLE", "orders"), envBool("ORDER_SHARDING_ENABLED", true))
+	repo := orderrepo.NewMySQLOrderRepo(db, writeRouter)
+	cartReader := ordercart.NewReader(
+		db,
+		envInt64("ORDER_DELIVERY_FEE", 0),
+		envInt64("ORDER_COUPON_DISCOUNT", 0),
+		envInt64("ORDER_FULL_REDUCTION_TRIGGER", 0),
+		envInt64("ORDER_FULL_REDUCTION_AMOUNT", 0),
+	)
+	paymentGateway := orderpayment.NewGateway()
+	cacheInvalidator := ordercache.NewNoopInvalidator()
+	mqPublisher := ordermq.NewPublisher(db)
+	wsNotifier := orderws.NewNotifier()
+
+	var txManager interface {
+		RunInTx(ctx context.Context, fn func(ctx context.Context) error) error
+	}
+	txManager = ordertx.NewNoopManager()
+	if db != nil {
+		txManager = ordertx.NewSQLManager(db, nil)
+	}
+
+	var idemStore interface {
+		Acquire(ctx context.Context, scene, key string, ttl time.Duration) (token string, acquired bool, err error)
+		MarkDone(ctx context.Context, scene, key, token string, result []byte) error
+		MarkFailed(ctx context.Context, scene, key, token, reason string) error
+		GetDoneResult(ctx context.Context, scene, key string) (result []byte, found bool, err error)
+	}
+	if redisClient != nil {
+		idemStore = orderidempotency.NewRedisStore(redisClient, readOrDefault("ORDER_IDEMPOTENCY_REDIS_PREFIX", "order:idempotency"))
+	} else {
+		idemStore = orderidempotency.NewInMemoryStore()
+	}
+
+	svc := orderapp.NewService(orderapp.Deps{
+		Repo:           repo,
+		Cart:           cartReader,
+		Payment:        paymentGateway,
+		Cache:          cacheInvalidator,
+		MQ:             mqPublisher,
+		WebSocket:      wsNotifier,
+		Idempotency:    idemStore,
+		Tx:             txManager,
+		IdempotencyTTL: time.Duration(envInt64("ORDER_IDEMPOTENCY_TTL_SEC", 86400)) * time.Second,
+	})
+	return orderhttpapi.NewHandler(svc)
+}
+
+func composeRoutes(identityRoutes, productRoutes, cartRoutes, reportRoutes, paymentCallbackRoutes, orderRoutes, baselineRoutes http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/identity/") || r.URL.Path == "/identity" {
 			identityRoutes.ServeHTTP(w, r)
@@ -327,6 +389,10 @@ func composeRoutes(identityRoutes, productRoutes, cartRoutes, reportRoutes, paym
 		}
 		if strings.HasPrefix(r.URL.Path, "/payment/") || r.URL.Path == "/payment" {
 			paymentCallbackRoutes.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/orders") || r.URL.Path == "/orders" {
+			orderRoutes.ServeHTTP(w, r)
 			return
 		}
 		baselineRoutes.ServeHTTP(w, r)
@@ -380,4 +446,7 @@ func envBool(key string, def bool) bool {
 	}
 	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
+
+
+
 

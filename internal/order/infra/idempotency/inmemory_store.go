@@ -1,4 +1,4 @@
-﻿package idempotency
+package idempotency
 
 import (
 	"context"
@@ -11,6 +11,7 @@ type item struct {
 	expireAt time.Time
 	state    string
 	reason   string
+	result   []byte
 }
 
 type InMemoryStore struct {
@@ -40,7 +41,7 @@ func (s *InMemoryStore) Acquire(ctx context.Context, scene, key string, ttl time
 	return token, true, nil
 }
 
-func (s *InMemoryStore) MarkDone(ctx context.Context, scene, key, token string) error {
+func (s *InMemoryStore) MarkDone(ctx context.Context, scene, key, token string, result []byte) error {
 	_ = ctx
 	mapKey := scene + ":" + key
 	s.mu.Lock()
@@ -54,6 +55,9 @@ func (s *InMemoryStore) MarkDone(ctx context.Context, scene, key, token string) 
 	}
 	old.state = "DONE"
 	old.reason = ""
+	if len(result) > 0 {
+		old.result = append([]byte(nil), result...)
+	}
 	s.items[mapKey] = old
 	return nil
 }
@@ -72,7 +76,24 @@ func (s *InMemoryStore) MarkFailed(ctx context.Context, scene, key, token, reaso
 	}
 	old.state = "FAILED"
 	old.reason = reason
-	// Failed command should be retryable.
 	delete(s.items, mapKey)
 	return nil
+}
+
+func (s *InMemoryStore) GetDoneResult(ctx context.Context, scene, key string) ([]byte, bool, error) {
+	_ = ctx
+	mapKey := scene + ":" + key
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old, ok := s.items[mapKey]
+	if !ok {
+		return nil, false, nil
+	}
+	if old.state != "DONE" {
+		return nil, false, nil
+	}
+	if len(old.result) == 0 {
+		return nil, true, nil
+	}
+	return append([]byte(nil), old.result...), true, nil
 }

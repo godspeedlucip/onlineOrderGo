@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"net/http"
@@ -19,11 +19,17 @@ func TestComposeRoutes_ProductMounted(t *testing.T) {
 	report := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
+	payment := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusResetContent)
+	})
+	order := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusPartialContent)
+	})
 	baseline := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	router := composeRoutes(identity, product, cart, report, baseline)
+	router := composeRoutes(identity, product, cart, report, payment, order, baseline)
 
 	rec1 := httptest.NewRecorder()
 	router.ServeHTTP(rec1, httptest.NewRequest(http.MethodGet, "/product/category/list", nil))
@@ -59,6 +65,18 @@ func TestComposeRoutes_ProductMounted(t *testing.T) {
 	router.ServeHTTP(recAdminReport, httptest.NewRequest(http.MethodGet, "/admin/report/orders", nil))
 	if recAdminReport.Code != http.StatusNoContent {
 		t.Fatalf("admin report route broken, got=%d", recAdminReport.Code)
+	}
+
+	recPayment := httptest.NewRecorder()
+	router.ServeHTTP(recPayment, httptest.NewRequest(http.MethodPost, "/payment/callback", nil))
+	if recPayment.Code != http.StatusResetContent {
+		t.Fatalf("payment route broken, got=%d", recPayment.Code)
+	}
+
+	recOrder := httptest.NewRecorder()
+	router.ServeHTTP(recOrder, httptest.NewRequest(http.MethodPost, "/orders", nil))
+	if recOrder.Code != http.StatusPartialContent {
+		t.Fatalf("order route broken, got=%d", recOrder.Code)
 	}
 
 	rec4 := httptest.NewRecorder()

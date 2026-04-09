@@ -1,7 +1,8 @@
-﻿package app
+package app
 
 import (
 	"context"
+	"encoding/json"
 
 	"go-baseline-skeleton/internal/order/domain"
 )
@@ -23,7 +24,16 @@ func (s *Service) withIdempotency(
 		return nil, err
 	}
 	if !acquired {
-		// TODO: optionally return latest order snapshot instead of conflict.
+		cached, found, getErr := s.deps.Idempotency.GetDoneResult(ctx, scene, key)
+		if getErr != nil {
+			return nil, getErr
+		}
+		if found && len(cached) > 0 {
+			var out domain.OrderView
+			if unmarshalErr := json.Unmarshal(cached, &out); unmarshalErr == nil {
+				return &out, nil
+			}
+		}
 		return nil, domain.NewBizError(domain.CodeConflict, "duplicated request", nil)
 	}
 	out, runErr := action(ctx)
@@ -31,8 +41,13 @@ func (s *Service) withIdempotency(
 		_ = s.deps.Idempotency.MarkFailed(ctx, scene, key, token, runErr.Error())
 		return nil, runErr
 	}
-	if doneErr := s.deps.Idempotency.MarkDone(ctx, scene, key, token); doneErr != nil {
-		// TODO: add async retry for mark-done failure.
+	payload := []byte(nil)
+	if out != nil {
+		if b, marshalErr := json.Marshal(out); marshalErr == nil {
+			payload = b
+		}
+	}
+	if doneErr := s.deps.Idempotency.MarkDone(ctx, scene, key, token, payload); doneErr != nil {
 		_ = doneErr
 	}
 	return out, nil

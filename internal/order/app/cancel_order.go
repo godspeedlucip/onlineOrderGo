@@ -1,4 +1,4 @@
-﻿package app
+package app
 
 import (
 	"context"
@@ -48,13 +48,11 @@ func (s *Service) CancelOrder(ctx context.Context, cmd domain.CancelOrderCommand
 			}
 
 			orderRef = order
-			event = &domain.OrderEvent{
-				Type:       domain.OrderEventCanceled,
-				OrderID:    order.OrderID,
-				OrderNo:    order.OrderNo,
-				From:       from,
-				To:         order.Status,
-				OccurredAt: now,
+			event = &domain.OrderEvent{Type: domain.OrderEventCanceled, OrderID: order.OrderID, OrderNo: order.OrderNo, From: from, To: order.Status, OccurredAt: now}
+			if s.deps.MQ != nil {
+				if err := s.deps.MQ.PublishOrderEvent(txCtx, *event); err != nil {
+					return err
+				}
 			}
 			out = &domain.OrderView{OrderID: order.OrderID, OrderNo: order.OrderNo, Status: order.Status, TotalAmount: order.TotalAmount, UpdatedAt: order.UpdatedAt}
 			return nil
