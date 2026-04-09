@@ -1,4 +1,4 @@
-﻿package app
+package app
 
 import (
 	"context"
@@ -27,7 +27,6 @@ func (s *Service) Publish(ctx context.Context, evt domain.OrderEvent) error {
 		evt.Version = 1
 	}
 
-	// Transaction boundary is controlled in app layer.
 	return s.deps.Tx.RunInTx(ctx, func(txCtx context.Context) error {
 		return s.deps.Outbox.Save(txCtx, evt)
 	})
@@ -41,9 +40,11 @@ func (s *Service) FlushOutbox(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	now := time.Now()
 	for _, evt := range pending {
 		if pubErr := s.deps.Publisher.Publish(ctx, evt); pubErr != nil {
-			// TODO: add retry/backoff and DLQ strategy when publish fails.
+			nextRetry := now.Add(2 * time.Second)
+			_ = s.deps.Outbox.MarkFailed(ctx, evt.EventID, pubErr.Error(), nextRetry)
 			continue
 		}
 		_ = s.deps.Outbox.MarkPublished(ctx, evt.EventID, time.Now())

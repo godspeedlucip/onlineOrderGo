@@ -1,4 +1,4 @@
-﻿package domain
+package domain
 
 import (
 	"context"
@@ -40,10 +40,17 @@ type OutboxRepository interface {
 	Save(ctx context.Context, evt OrderEvent) error
 	FetchPending(ctx context.Context, limit int) ([]OrderEvent, error)
 	MarkPublished(ctx context.Context, eventID string, publishedAt time.Time) error
+	MarkFailed(ctx context.Context, eventID, reason string, nextRetryAt time.Time) error
 }
 
 type TxManager interface {
 	RunInTx(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
+type EventDispatcher interface {
+	OnOrderCreated(ctx context.Context, evt OrderEvent) error
+	OnOrderCanceled(ctx context.Context, evt OrderEvent) error
+	OnOrderStatusChanged(ctx context.Context, evt OrderEvent) error
 }
 
 // Optional cross-module ports for app-level integration.

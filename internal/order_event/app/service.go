@@ -1,4 +1,4 @@
-﻿package app
+package app
 
 import (
 	"time"
@@ -13,6 +13,7 @@ type Deps struct {
 	Idempotency domain.ConsumeIdempotencyStore
 	Outbox      domain.OutboxRepository
 	Tx          domain.TxManager
+	Dispatcher  domain.EventDispatcher
 
 	Repository domain.RepositoryPort
 	Cache      domain.CachePort

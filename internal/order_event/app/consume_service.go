@@ -1,4 +1,4 @@
-﻿package app
+package app
 
 import (
 	"context"
@@ -28,9 +28,22 @@ func (s *Service) Handle(ctx context.Context, evt domain.OrderEvent) error {
 	if evt.EventID == "" || evt.EventType == "" {
 		return domain.NewBizError(domain.CodeInvalidArgument, "invalid event", nil)
 	}
+
+	if s.deps.Dispatcher != nil {
+		switch evt.EventType {
+		case domain.EventOrderCreated:
+			return s.deps.Dispatcher.OnOrderCreated(ctx, evt)
+		case domain.EventOrderCanceled:
+			return s.deps.Dispatcher.OnOrderCanceled(ctx, evt)
+		case domain.EventOrderStatusSet:
+			return s.deps.Dispatcher.OnOrderStatusChanged(ctx, evt)
+		default:
+			return nil
+		}
+	}
+
 	switch evt.EventType {
 	case domain.EventOrderCreated, domain.EventOrderCanceled, domain.EventOrderStatusSet:
-		// TODO: replace with real downstream app usecase calls.
 		if s.deps.Repository != nil {
 			_ = s.deps.Repository.Ping(ctx)
 		}
@@ -45,8 +58,6 @@ func (s *Service) Handle(ctx context.Context, evt domain.OrderEvent) error {
 		}
 		return nil
 	default:
-		// Unknown event type: ack by returning nil to avoid poison-message loops.
-		// TODO: send unknown events to a dedicated dead-letter topic for audit.
 		return nil
 	}
 }

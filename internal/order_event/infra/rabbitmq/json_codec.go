@@ -1,4 +1,4 @@
-﻿package rabbitmq
+package rabbitmq
 
 import (
 	"encoding/json"
@@ -18,6 +18,7 @@ func (c *JSONCodec) Encode(evt domain.OrderEvent) ([]byte, map[string]string, er
 	headers := map[string]string{
 		"eventType": string(evt.EventType),
 		"version":   "1",
+		"eventId":   evt.EventID,
 	}
 	return body, headers, nil
 }
@@ -32,6 +33,11 @@ func (c *JSONCodec) Decode(msg domain.ConsumeMessage) (*domain.OrderEvent, error
 	}
 	if evt.EventID == "" {
 		evt.EventID = msg.MessageID
+	}
+	if evt.EventType == "" {
+		if t, ok := msg.Headers["eventType"]; ok {
+			evt.EventType = domain.EventType(t)
+		}
 	}
 	return &evt, nil
 }

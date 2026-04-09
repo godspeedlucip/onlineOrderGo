@@ -1,4 +1,4 @@
-﻿package outbox
+package outbox
 
 import (
 	"context"
@@ -28,8 +28,11 @@ func (r *Relay) Flush(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	now := time.Now()
 	for _, evt := range pending {
 		if pubErr := r.Publisher.Publish(ctx, evt); pubErr != nil {
+			nextRetry := now.Add(2 * time.Second)
+			_ = r.Repo.MarkFailed(ctx, evt.EventID, pubErr.Error(), nextRetry)
 			continue
 		}
 		_ = r.Repo.MarkPublished(ctx, evt.EventID, time.Now())
