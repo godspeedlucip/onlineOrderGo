@@ -27,7 +27,7 @@ type VerifiedCallback struct {
 type OrderSnapshot struct {
 	OrderID       int64
 	OrderNo       string
-	Status        string
+	Status        int
 	TotalAmount   int64
 	MerchantID    string
 }

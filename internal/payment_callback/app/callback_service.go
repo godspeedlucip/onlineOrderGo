@@ -31,7 +31,7 @@ type Service struct {
 
 func NewService(deps Deps) *Service {
 	if deps.IdempotencyTTL <= 0 {
-		deps.IdempotencyTTL = 10 * time.Minute
+		deps.IdempotencyTTL = 24 * time.Hour
 	}
 	return &Service{deps: deps}
 }
@@ -68,13 +68,11 @@ func (s *Service) HandleCallback(ctx context.Context, in domain.CallbackInput) (
 		}
 		if !decision.Enabled {
 			// Gray disabled: ack success to avoid provider retry storm.
-			// TODO: align with Java fallback strategy for bypass traffic.
 			return &domain.CallbackAck{HTTPStatus: 200, Body: "success"}, nil
 		}
 	}
 	if !isPaidSuccessStatus(verified.RawStatus) {
 		// Keep callback ACK success for non-paid status to avoid provider retries.
-		// TODO: align exact status-mapping with Java channel enum definitions.
 		_ = s.deps.Repo.InsertCallbackLog(ctx, domain.CallbackLog{
 			NotifyID:      verified.NotifyID,
 			OrderNo:       verified.OrderNo,
@@ -137,14 +135,15 @@ func (s *Service) HandleCallback(ctx context.Context, in domain.CallbackInput) (
 		}
 
 		if updated && s.deps.Publisher != nil {
-			_ = s.deps.Publisher.PublishOrderPaid(txCtx, domain.OrderPaidEvent{
+			if pubErr := s.deps.Publisher.PublishOrderPaid(txCtx, domain.OrderPaidEvent{
 				OrderID:       order.OrderID,
 				OrderNo:       order.OrderNo,
 				TransactionNo: verified.TransactionNo,
 				PaidAmount:    verified.PaidAmount,
 				PaidAt:        verified.PaidAt,
-			})
-			// TODO: decide retry/outbox strategy if publish fails.
+			}); pubErr != nil {
+				return nil, pubErr
+			}
 		}
 
 		return &domain.CallbackAck{HTTPStatus: 200, Body: "success"}, nil
@@ -180,7 +179,7 @@ func buildIdempotencyKey(cb *domain.VerifiedCallback) string {
 
 func isPaidSuccessStatus(raw string) bool {
 	s := strings.ToUpper(strings.TrimSpace(raw))
-	return s == "SUCCESS" || s == "TRADE_SUCCESS" || s == "PAID"
+	return s == "SUCCESS" || s == "TRADE_SUCCESS" || s == "PAID" || s == "ORDERPAID"
 }
 
 func (s *Service) withIdempotency(

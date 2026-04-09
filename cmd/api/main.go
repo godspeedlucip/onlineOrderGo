@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -52,6 +52,14 @@ import (
 	reportrouter "go-baseline-skeleton/internal/report/infra/router"
 	reporttx "go-baseline-skeleton/internal/report/infra/tx"
 	reporthttpapi "go-baseline-skeleton/internal/report/transport/httpapi"
+
+	paymentcallbackapp "go-baseline-skeleton/internal/payment_callback/app"
+	paymentcallbackidempotency "go-baseline-skeleton/internal/payment_callback/infra/idempotency"
+	paymentcallbackmq "go-baseline-skeleton/internal/payment_callback/infra/mq"
+	paymentcallbackrepo "go-baseline-skeleton/internal/payment_callback/infra/repo"
+	paymentcallbacktx "go-baseline-skeleton/internal/payment_callback/infra/tx"
+	paymentcallbackverify "go-baseline-skeleton/internal/payment_callback/infra/verify"
+	paymentcallbackhttpapi "go-baseline-skeleton/internal/payment_callback/transport/httpapi"
 )
 
 func main() {
@@ -108,10 +116,11 @@ func main() {
 	productHandler := buildProductHandler(db, redisClient)
 	cartHandler := buildCartHandler(db, redisClient)
 	reportHandler := buildReportHandler(db, redisClient)
+	paymentCallbackHandler := buildPaymentCallbackHandler(db, redisClient)
 
 	server := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           composeRoutes(identityHandler.Routes(), productHandler.Routes(), cartHandler.Routes(), reportHandler.Routes(), baselineHandler.Routes()),
+		Handler:           composeRoutes(identityHandler.Routes(), productHandler.Routes(), cartHandler.Routes(), reportHandler.Routes(), paymentCallbackHandler.Routes(), baselineHandler.Routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -265,7 +274,39 @@ func buildReportHandler(db *sql.DB, redisClient redis.UniversalClient) *reportht
 	return reporthttpapi.NewHandler(svc)
 }
 
-func composeRoutes(identityRoutes, productRoutes, cartRoutes, reportRoutes, baselineRoutes http.Handler) http.Handler {
+func buildPaymentCallbackHandler(db *sql.DB, redisClient redis.UniversalClient) *paymentcallbackhttpapi.Handler {
+	var txManager interface {
+		RunInTx(ctx context.Context, fn func(ctx context.Context) error) error
+	}
+	txManager = paymentcallbacktx.NewNoopManager()
+	if db != nil {
+		txManager = paymentcallbacktx.NewSQLManager(db, nil)
+	}
+
+	var idemStore interface {
+		Acquire(ctx context.Context, scene, key string, ttl time.Duration) (token string, acquired bool, err error)
+		MarkDone(ctx context.Context, scene, key, token string) error
+		MarkFailed(ctx context.Context, scene, key, token, reason string) error
+	}
+	if redisClient != nil {
+		idemStore = paymentcallbackidempotency.NewRedisStore(redisClient, readOrDefault("PAYMENT_CALLBACK_IDEMPOTENCY_PREFIX", "payment_callback:idempotency"))
+	} else {
+		idemStore = paymentcallbackidempotency.NewInMemoryStore()
+	}
+
+	usecase := paymentcallbackapp.NewService(paymentcallbackapp.Deps{
+		Verifier:       paymentcallbackverify.NewChannelVerifier(parseChannelSecretsEnv(os.Getenv("PAYMENT_CALLBACK_CHANNEL_SECRETS"))),
+		Repo:           paymentcallbackrepo.NewMySQLCallbackRepo(db),
+		Idempotency:    idemStore,
+		Publisher:      paymentcallbackmq.NewEventPublisher(db),
+		GrayPolicy:     paymentcallbackverify.NewSimpleGrayPolicy(envBool("PAYMENT_CALLBACK_GRAY_ENABLED", true)),
+		Tx:             txManager,
+		IdempotencyTTL: time.Duration(envInt64("PAYMENT_CALLBACK_IDEMPOTENCY_TTL_SEC", 86400)) * time.Second,
+	})
+	return paymentcallbackhttpapi.NewHandler(usecase)
+}
+
+func composeRoutes(identityRoutes, productRoutes, cartRoutes, reportRoutes, paymentCallbackRoutes, baselineRoutes http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/identity/") || r.URL.Path == "/identity" {
 			identityRoutes.ServeHTTP(w, r)
@@ -284,8 +325,33 @@ func composeRoutes(identityRoutes, productRoutes, cartRoutes, reportRoutes, base
 			cartRoutes.ServeHTTP(w, r)
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, "/payment/") || r.URL.Path == "/payment" {
+			paymentCallbackRoutes.ServeHTTP(w, r)
+			return
+		}
 		baselineRoutes.ServeHTTP(w, r)
 	})
+}
+
+func parseChannelSecretsEnv(raw string) map[string]string {
+	out := make(map[string]string)
+	for _, seg := range strings.Split(raw, ",") {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		parts := strings.SplitN(seg, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		channel := strings.ToUpper(strings.TrimSpace(parts[0]))
+		secret := strings.TrimSpace(parts[1])
+		if channel == "" || secret == "" {
+			continue
+		}
+		out[channel] = secret
+	}
+	return out
 }
 
 func readOrDefault(key, def string) string {
@@ -314,3 +380,4 @@ func envBool(key string, def bool) bool {
 	}
 	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
+
