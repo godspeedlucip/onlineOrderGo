@@ -72,6 +72,14 @@ import (
 	ordertx "go-baseline-skeleton/internal/order/infra/tx"
 	orderws "go-baseline-skeleton/internal/order/infra/websocket"
 	orderhttpapi "go-baseline-skeleton/internal/order/transport/httpapi"
+	websocketpushapp "go-baseline-skeleton/internal/websocket_push/app"
+	websocketpushdomain "go-baseline-skeleton/internal/websocket_push/domain"
+	websocketpushidempotency "go-baseline-skeleton/internal/websocket_push/infra/idempotency"
+	websocketpushmq "go-baseline-skeleton/internal/websocket_push/infra/mq"
+	websocketpushoffline "go-baseline-skeleton/internal/websocket_push/infra/offline"
+	websocketpushregistry "go-baseline-skeleton/internal/websocket_push/infra/registry"
+	websocketpushws "go-baseline-skeleton/internal/websocket_push/infra/ws"
+	websocketpushhttpapi "go-baseline-skeleton/internal/websocket_push/transport/httpapi"
 )
 
 func main() {
@@ -130,10 +138,11 @@ func main() {
 	reportHandler := buildReportHandler(db, redisClient)
 	paymentCallbackHandler := buildPaymentCallbackHandler(db, redisClient)
 	orderHandler := buildOrderHandler(db, redisClient)
+	websocketPushHandler := buildWebSocketPushHandler(redisClient)
 
 	server := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           composeRoutes(identityHandler.Routes(), productHandler.Routes(), cartHandler.Routes(), reportHandler.Routes(), paymentCallbackHandler.Routes(), orderHandler.Routes(), baselineHandler.Routes()),
+		Handler:           composeRoutes(identityHandler.Routes(), productHandler.Routes(), cartHandler.Routes(), reportHandler.Routes(), paymentCallbackHandler.Routes(), orderHandler.Routes(), websocketPushHandler.Routes(), baselineHandler.Routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -368,7 +377,65 @@ func buildOrderHandler(db *sql.DB, redisClient redis.UniversalClient) *orderhttp
 	return orderhttpapi.NewHandler(svc)
 }
 
-func composeRoutes(identityRoutes, productRoutes, cartRoutes, reportRoutes, paymentCallbackRoutes, orderRoutes, baselineRoutes http.Handler) http.Handler {
+func buildWebSocketPushHandler(redisClient redis.UniversalClient) *websocketpushhttpapi.Handler {
+	authPort := websocketpushws.NewTokenAuth(websocketpushws.JWTAuthConfig{
+		Secret:    readOrDefault("WS_JWT_SECRET", "itcast"),
+		Algorithm: readOrDefault("WS_JWT_ALG", "HS256"),
+		Issuer:    strings.TrimSpace(os.Getenv("WS_JWT_ISSUER")),
+		Audience:  strings.TrimSpace(os.Getenv("WS_JWT_AUDIENCE")),
+		UserClaim: readOrDefault("WS_JWT_USER_CLAIM", "userId"),
+	})
+	registry := websocketpushregistry.NewMemoryRegistry()
+	gateway := websocketpushws.NewGateway()
+
+	var dedupStore interface {
+		TryAcquire(ctx context.Context, messageID string, ttl time.Duration) (bool, error)
+	}
+	if redisClient != nil {
+		dedupStore = websocketpushidempotency.NewRedisStore(redisClient, readOrDefault("WS_DEDUP_PREFIX", "websocket_push"))
+	} else {
+		dedupStore = websocketpushidempotency.NewMemoryStore()
+	}
+
+	mqBridge := websocketpushmq.NewNoopBroadcaster()
+	amqpDSN := strings.TrimSpace(os.Getenv("WS_MQ_DSN"))
+	if amqpDSN != "" {
+		bridge, err := websocketpushmq.NewBroadcaster(websocketpushmq.Config{
+			DSN:         amqpDSN,
+			Exchange:    readOrDefault("WS_MQ_EXCHANGE", "ws.push.broadcast"),
+			DLQExchange: readOrDefault("WS_MQ_DLQ_EXCHANGE", "ws.push.broadcast.dlq"),
+			NodeQueue:   readOrDefault("WS_MQ_NODE_QUEUE", "ws.push.node.default"),
+			ConsumerTag: readOrDefault("WS_MQ_CONSUMER_TAG", "ws_push_consumer"),
+			Prefetch:    int(envInt64("WS_MQ_PREFETCH", 50)),
+			MaxRetry:    int(envInt64("WS_MQ_MAX_RETRY", 5)),
+		})
+		if err == nil {
+			mqBridge = bridge
+		}
+	}
+
+	svc := websocketpushapp.NewService(websocketpushapp.Deps{
+		Registry:     registry,
+		Gateway:      gateway,
+		Auth:         authPort,
+		MQ:           mqBridge,
+		Dedup:        dedupStore,
+		Offline:      websocketpushoffline.NewNoopStore(),
+		PushDedupTTL: time.Duration(envInt64("WS_PUSH_DEDUP_TTL_SEC", 120)) * time.Second,
+	})
+	handler := websocketpushhttpapi.NewHandler(svc, svc, authPort)
+	handler.SetWebSocketServer(websocketpushws.NewServer(svc, gateway))
+	handler.SetOfflinePuller(svc)
+
+	go func() {
+		_ = mqBridge.Consume(context.Background(), func(ctx context.Context, msg websocketpushdomain.PushMessage) error {
+			_, err := svc.DeliverLocal(ctx, msg)
+			return err
+		})
+	}()
+	return handler
+}
+func composeRoutes(identityRoutes, productRoutes, cartRoutes, reportRoutes, paymentCallbackRoutes, orderRoutes, websocketPushRoutes, baselineRoutes http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/identity/") || r.URL.Path == "/identity" {
 			identityRoutes.ServeHTTP(w, r)
@@ -393,6 +460,10 @@ func composeRoutes(identityRoutes, productRoutes, cartRoutes, reportRoutes, paym
 		}
 		if strings.HasPrefix(r.URL.Path, "/orders") || r.URL.Path == "/orders" {
 			orderRoutes.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/ws") {
+			websocketPushRoutes.ServeHTTP(w, r)
 			return
 		}
 		baselineRoutes.ServeHTTP(w, r)
@@ -446,6 +517,7 @@ func envBool(key string, def bool) bool {
 	}
 	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
+
 
 
 

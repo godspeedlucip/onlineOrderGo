@@ -1,6 +1,9 @@
 ﻿package domain
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type PushUsecase interface {
 	Push(ctx context.Context, msg PushMessage) (*PushResult, error)
@@ -35,6 +38,15 @@ type AuthPort interface {
 
 type MQBroadcaster interface {
 	PublishBroadcast(ctx context.Context, msg PushMessage) error
+}
+
+type PushDedupStore interface {
+	TryAcquire(ctx context.Context, messageID string, ttl time.Duration) (bool, error)
+}
+
+type OfflineMessageStore interface {
+	Save(ctx context.Context, msg PushMessage) error
+	PullByUser(ctx context.Context, userID int64, limit int) ([]PushMessage, error)
 }
 
 type TxManager interface {

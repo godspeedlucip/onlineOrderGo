@@ -21,7 +21,11 @@ func (s *Service) Push(ctx context.Context, msg domain.PushMessage) (*domain.Pus
 		msg.CreatedAt = time.Now()
 	}
 
-	if s.isDuplicateMessage(msg.MessageID) {
+	duplicated, err := s.isDuplicateMessage(ctx, msg.MessageID)
+	if err != nil {
+		return nil, err
+	}
+	if duplicated {
 		return &domain.PushResult{Delivered: 0, Failed: 0}, nil
 	}
 
@@ -38,7 +42,9 @@ func (s *Service) Push(ctx context.Context, msg domain.PushMessage) (*domain.Pus
 		res.Delivered++
 	}
 	if res.Delivered == 0 && s.deps.MQ != nil {
-		// TODO: fallback publish for offline sessions (e.g. delayed notify).
+		if s.deps.Offline != nil {
+			_ = s.deps.Offline.Save(ctx, msg)
+		}
 		_ = s.deps.MQ.PublishBroadcast(ctx, msg)
 	}
 	return res, nil
@@ -57,7 +63,11 @@ func (s *Service) Broadcast(ctx context.Context, msg domain.PushMessage) (*domai
 	if msg.CreatedAt.IsZero() {
 		msg.CreatedAt = time.Now()
 	}
-	if s.isDuplicateMessage(msg.MessageID) {
+	duplicated, err := s.isDuplicateMessage(ctx, msg.MessageID)
+	if err != nil {
+		return nil, err
+	}
+	if duplicated {
 		return &domain.PushResult{Delivered: 0, Failed: 0}, nil
 	}
 
@@ -79,6 +89,19 @@ func (s *Service) Broadcast(ctx context.Context, msg domain.PushMessage) (*domai
 	return res, nil
 }
 
+func (s *Service) PullOffline(ctx context.Context, userID int64, limit int) ([]domain.PushMessage, error) {
+	if userID <= 0 {
+		return nil, domain.NewBizError(domain.CodeInvalidArgument, "invalid userId", nil)
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if s.deps.Offline == nil {
+		return []domain.PushMessage{}, nil
+	}
+	return s.deps.Offline.PullByUser(ctx, userID, limit)
+}
+
 func (s *Service) resolveTargets(ctx context.Context, msg domain.PushMessage) ([]domain.Session, error) {
 	if msg.TargetUser > 0 {
 		return s.deps.Registry.FindByUser(ctx, msg.TargetUser)
@@ -92,20 +115,48 @@ func (s *Service) resolveTargets(ctx context.Context, msg domain.PushMessage) ([
 	return nil, domain.NewBizError(domain.CodeInvalidArgument, "missing push target", nil)
 }
 
-func (s *Service) isDuplicateMessage(messageID string) bool {
-	now := time.Now()
-	expireBefore := now.Add(-s.deps.PushDedupTTL)
-
-	s.dedupeMu.Lock()
-	defer s.dedupeMu.Unlock()
-	for k, ts := range s.dedupe {
-		if ts.Before(expireBefore) {
-			delete(s.dedupe, k)
+func (s *Service) DeliverLocal(ctx context.Context, msg domain.PushMessage) (*domain.PushResult, error) {
+	if s.deps.Registry == nil || s.deps.Gateway == nil {
+		return nil, domain.NewBizError(domain.CodeInternal, "broadcast deps not initialized", nil)
+	}
+	if len(msg.Payload) == 0 {
+		return nil, domain.NewBizError(domain.CodeInvalidArgument, "empty payload", nil)
+	}
+	if msg.MessageID == "" {
+		msg.MessageID = "broadcast-" + time.Now().Format("20060102150405.000")
+	}
+	duplicated, err := s.isDuplicateMessage(ctx, msg.MessageID)
+	if err != nil {
+		return nil, err
+	}
+	if duplicated {
+		return &domain.PushResult{Delivered: 0, Failed: 0}, nil
+	}
+	sessions, err := s.deps.Registry.FindAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	res := &domain.PushResult{}
+	for _, session := range sessions {
+		if err := s.deps.Gateway.Send(ctx, session.SessionID, msg.Payload); err != nil {
+			res.Failed++
+			continue
 		}
+		res.Delivered++
 	}
-	if _, ok := s.dedupe[messageID]; ok {
-		return true
+	return res, nil
+}
+
+func (s *Service) isDuplicateMessage(ctx context.Context, messageID string) (bool, error) {
+	if messageID == "" {
+		return false, domain.NewBizError(domain.CodeInvalidArgument, "empty messageId", nil)
 	}
-	s.dedupe[messageID] = now
-	return false
+	if s.deps.Dedup == nil {
+		return false, nil
+	}
+	acquired, err := s.deps.Dedup.TryAcquire(ctx, messageID, s.deps.PushDedupTTL)
+	if err != nil {
+		return false, domain.NewBizError(domain.CodeInternal, "dedupe store error", err)
+	}
+	return !acquired, nil
 }

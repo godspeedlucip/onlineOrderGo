@@ -1,7 +1,6 @@
 ﻿package app
 
 import (
-	"sync"
 	"time"
 
 	"go-baseline-skeleton/internal/websocket_push/domain"
@@ -13,6 +12,8 @@ type Deps struct {
 	Auth     domain.AuthPort
 	MQ       domain.MQBroadcaster
 	Tx       domain.TxManager
+	Dedup    domain.PushDedupStore
+	Offline  domain.OfflineMessageStore
 
 	Repository domain.RepositoryPort
 	Cache      domain.CachePort
@@ -25,14 +26,11 @@ type Deps struct {
 
 type Service struct {
 	deps Deps
-
-	dedupeMu sync.Mutex
-	dedupe   map[string]time.Time
 }
 
 func NewService(deps Deps) *Service {
 	if deps.PushDedupTTL <= 0 {
 		deps.PushDedupTTL = 2 * time.Minute
 	}
-	return &Service{deps: deps, dedupe: make(map[string]time.Time)}
+	return &Service{deps: deps}
 }

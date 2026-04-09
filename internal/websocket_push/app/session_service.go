@@ -47,9 +47,6 @@ func (s *Service) Connect(ctx context.Context, req domain.ConnectRequest) (*doma
 	if err := s.deps.Registry.Add(ctx, *session); err != nil {
 		return nil, err
 	}
-	if registrar, ok := s.deps.Gateway.(interface{ Register(string) }); ok {
-		registrar.Register(session.SessionID)
-	}
 	return session, nil
 }
 
@@ -91,7 +88,7 @@ func (s *Service) Heartbeat(ctx context.Context, sessionID string) error {
 }
 
 func buildSessionID(userID int64, clientType domain.ClientType, t time.Time) string {
-	return fmt.Sprintf("%s-%s-%d", t.Format("20060102150405.000"), clientType, userID)
+	return fmt.Sprintf("%s-%s-%d-%d", t.Format("20060102150405.000"), clientType, userID, t.UnixNano())
 }
 
 func normalizeChannels(in []string) []string {
