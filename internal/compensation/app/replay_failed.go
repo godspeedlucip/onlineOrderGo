@@ -8,6 +8,7 @@ import (
 )
 
 func (s *Service) ReplayFailed(ctx context.Context, limit int) (*domain.RunSummary, error) {
+	startAll := time.Now()
 	if s.deps.Scanner == nil || s.deps.Executor == nil || s.deps.Repo == nil {
 		return nil, domain.NewBizError(domain.CodeInternal, "replay deps not initialized", nil)
 	}
@@ -20,7 +21,7 @@ func (s *Service) ReplayFailed(ctx context.Context, limit int) (*domain.RunSumma
 		return nil, err
 	}
 	if !locked {
-		return &domain.RunSummary{JobType: domain.JobReplayFailed}, nil
+		return &domain.RunSummary{JobType: domain.JobReplayFailed, ElapsedMs: time.Since(startAll).Milliseconds()}, nil
 	}
 	defer func() { _ = unlock() }()
 
@@ -28,31 +29,10 @@ func (s *Service) ReplayFailed(ctx context.Context, limit int) (*domain.RunSumma
 	if err != nil {
 		return nil, err
 	}
-	summary := &domain.RunSummary{JobType: domain.JobReplayFailed, Total: len(items)}
+	summary := &domain.RunSummary{JobType: domain.JobReplayFailed, Total: len(items), ScanCount: len(items)}
 	for _, item := range items {
-		started := time.Now()
-		run := func(runCtx context.Context) error {
-			return s.deps.Executor.Execute(runCtx, item)
-		}
-		var execErr error
-		if s.deps.Tx != nil {
-			execErr = s.deps.Tx.RunInTx(ctx, run)
-		} else {
-			execErr = run(ctx)
-		}
-		if execErr != nil {
-			summary.Failed++
-			_ = s.deps.Repo.SaveRun(ctx, domain.TaskRunRecord{TaskID: item.TaskID, JobType: item.JobType, Status: domain.TaskFailed, Reason: execErr.Error(), StartedAt: started, FinishedAt: time.Now()})
-			_ = s.deps.Repo.MarkFailed(ctx, item.TaskID, execErr.Error())
-			continue
-		}
-		if doneErr := s.deps.Repo.MarkDone(ctx, item.TaskID); doneErr != nil {
-			summary.Skipped++
-			_ = s.deps.Repo.SaveRun(ctx, domain.TaskRunRecord{TaskID: item.TaskID, JobType: item.JobType, Status: domain.TaskSkipped, Reason: doneErr.Error(), StartedAt: started, FinishedAt: time.Now()})
-			continue
-		}
-		summary.Done++
-		_ = s.deps.Repo.SaveRun(ctx, domain.TaskRunRecord{TaskID: item.TaskID, JobType: item.JobType, Status: domain.TaskDone, StartedAt: started, FinishedAt: time.Now()})
+		s.runOne(ctx, item, summary)
 	}
+	s.summaryFinalize(ctx, summary, startAll)
 	return summary, nil
 }

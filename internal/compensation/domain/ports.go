@@ -33,6 +33,10 @@ type TxManager interface {
 	RunInTx(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
+type MetricsRecorder interface {
+	Observe(ctx context.Context, summary RunSummary)
+}
+
 // Optional dependency ports for unified DI style.
 type RepositoryPort interface{ Ping(ctx context.Context) error }
 type CachePort interface{ Ping(ctx context.Context) error }

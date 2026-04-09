@@ -12,6 +12,7 @@ type Deps struct {
 	Repo     domain.TaskRepository
 	Lock     domain.Locker
 	Tx       domain.TxManager
+	Metrics  domain.MetricsRecorder
 
 	Repository domain.RepositoryPort
 	Cache      domain.CachePort
